@@ -14,22 +14,12 @@
 // MXFP8 implementation and owns the kv_scale_w input.
 static std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
 dual_mxfp8_sparse_attn_decode_interface(
-    const at::Tensor& q,
-    const at::Tensor& kv,
-    const at::Tensor& indices,
-    const std::optional<at::Tensor>& topk_length,
-    const std::optional<at::Tensor>& attn_sink,
-    std::optional<at::Tensor>& tile_scheduler_metadata,
-    std::optional<at::Tensor>& num_splits,
-    const std::optional<at::Tensor>& extra_kv,
-    const std::optional<at::Tensor>& extra_indices,
-    const std::optional<at::Tensor>& extra_topk_length,
-    int d_qk,
-    int d_v,
-    float sm_scale,
-    const std::vector<uint32_t>& w1,
-    const std::vector<uint32_t>& w2
-) {
+    const at::Tensor& q, const at::Tensor& kv, const at::Tensor& indices,
+    const std::optional<at::Tensor>& topk_length, const std::optional<at::Tensor>& attn_sink,
+    std::optional<at::Tensor>& tile_scheduler_metadata, std::optional<at::Tensor>& num_splits,
+    const std::optional<at::Tensor>& extra_kv, const std::optional<at::Tensor>& extra_indices,
+    const std::optional<at::Tensor>& extra_topk_length, int d_qk, int d_v, float sm_scale,
+    const std::vector<uint32_t>& w1, const std::vector<uint32_t>& w2) {
     using bf16 = __nv_bfloat16;
     constexpr int d = 512;
     constexpr int q_bytes = d + 16;
@@ -59,13 +49,14 @@ dual_mxfp8_sparse_attn_decode_interface(
     TORCH_CHECK(d_qk == d && d_v == d, "Dual MXFP8 decode requires d_qk=d_v=512");
     TORCH_CHECK(topk > 0 && topk % 64 == 0, "topk must be a positive multiple of 64");
     TORCH_CHECK(w1.size() == 8 && w2.size() == 8,
-        "w1 and w2 must each contain 8 pre-expanded TMEM scale words");
+                "w1 and w2 must each contain 8 pre-expanded TMEM scale words");
     TORCH_CHECK(q.size(3) == q_bytes, "q must use the 528-byte head64 envelope");
     TORCH_CHECK(kv.size(3) == kv_bytes, "kv must use the 528-byte head64 envelope");
     TORCH_CHECK(!extra_kv.has_value() || extra_indices.has_value(),
-        "extra_indices must be provided with extra_kv");
-    TORCH_CHECK(extra_kv.has_value() || (!extra_indices.has_value() && !extra_topk_length.has_value()),
-        "extra indices require extra_kv");
+                "extra_indices must be provided with extra_kv");
+    TORCH_CHECK(extra_kv.has_value() ||
+                    (!extra_indices.has_value() && !extra_topk_length.has_value()),
+                "extra indices require extra_kv");
 
     KU_CHECK_DEVICE(q);
     KU_CHECK_DEVICE(kv);
@@ -78,12 +69,13 @@ dual_mxfp8_sparse_attn_decode_interface(
     KU_CHECK_DEVICE(extra_indices);
     KU_CHECK_DEVICE(extra_topk_length);
     TORCH_CHECK(q.dtype() == torch::kUInt8 || q.dtype() == torch::kFloat8_e4m3fn,
-        "q must have E4M3 storage (uint8 or float8_e4m3fn)");
+                "q must have E4M3 storage (uint8 or float8_e4m3fn)");
     TORCH_CHECK(kv.dtype() == torch::kUInt8 || kv.dtype() == torch::kFloat8_e4m3fn,
-        "kv must have E4M3 storage (uint8 or float8_e4m3fn)");
+                "kv must have E4M3 storage (uint8 or float8_e4m3fn)");
     if (have_extra_kv) {
-        TORCH_CHECK(extra_kv->dtype() == torch::kUInt8 || extra_kv->dtype() == torch::kFloat8_e4m3fn,
-            "extra_kv must have E4M3 storage");
+        TORCH_CHECK(extra_kv->dtype() == torch::kUInt8 ||
+                        extra_kv->dtype() == torch::kFloat8_e4m3fn,
+                    "extra_kv must have E4M3 storage");
     }
     KU_CHECK_DTYPE(indices, torch::kInt32);
     KU_CHECK_DTYPE(topk_length, torch::kInt32);
@@ -109,10 +101,10 @@ dual_mxfp8_sparse_attn_decode_interface(
     KU_CHECK_SHAPE(attn_sink, h_q);
     KU_CHECK_SHAPE(extra_indices, b, s_q, extra_topk);
     KU_CHECK_SHAPE(extra_topk_length, b);
-    TORCH_CHECK(kv.stride(1) == kv_bytes * h_kv,
-        "dual KV row stride must be 528 bytes, got ", kv.stride(1));
-    TORCH_CHECK(kv.stride(0) % 512 == 0,
-        "dual KV page stride must be divisible by 512 bytes, got ", kv.stride(0));
+    TORCH_CHECK(kv.stride(1) == kv_bytes * h_kv, "dual KV row stride must be 528 bytes, got ",
+                kv.stride(1));
+    TORCH_CHECK(kv.stride(0) % 512 == 0, "dual KV page stride must be divisible by 512 bytes, got ",
+                kv.stride(0));
     if (have_extra_kv) {
         TORCH_CHECK(extra_kv->stride(1) == kv_bytes * h_kv);
         TORCH_CHECK(extra_kv->stride(0) % 512 == 0);
@@ -127,49 +119,84 @@ dual_mxfp8_sparse_attn_decode_interface(
     constexpr int fixed_overhead_num_blocks = 5;
     constexpr int block_size_topk = 64;
     if (!tile_scheduler_metadata.has_value()) {
-        tile_scheduler_metadata = torch::empty(
-            {num_sm_parts, static_cast<int>(sizeof(DecodingSchedMeta) / sizeof(int))},
-            opts.dtype(torch::kInt32));
+        tile_scheduler_metadata =
+            torch::empty({num_sm_parts, static_cast<int>(sizeof(DecodingSchedMeta) / sizeof(int))},
+                         opts.dtype(torch::kInt32));
         num_splits = torch::empty({b + 1}, opts.dtype(torch::kInt32));
         GetDecodeSchedMetaParams sched = {
-            b, s_q, block_size_topk, fixed_overhead_num_blocks, topk, extra_topk,
+            b,
+            s_q,
+            block_size_topk,
+            fixed_overhead_num_blocks,
+            topk,
+            extra_topk,
             ku::get_optional_tensor_ptr<int>(topk_length),
-            ku::get_optional_tensor_ptr<int>(extra_topk_length), nullptr,
+            ku::get_optional_tensor_ptr<int>(extra_topk_length),
+            nullptr,
             reinterpret_cast<DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
-            num_splits->data_ptr<int>(), num_sm_parts,
-            at::cuda::getCurrentCUDAStream().stream()
-        };
+            num_splits->data_ptr<int>(),
+            num_sm_parts,
+            at::cuda::getCurrentCUDAStream().stream()};
         smxx::decode::run_get_decoding_sched_meta_kernel(sched);
     }
     KU_CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts, sizeof(DecodingSchedMeta) / sizeof(int));
     KU_CHECK_SHAPE(num_splits, b + 1);
 
     SparseAttnDualMxfp8DecodeParams params = {
-        b, s_q, h_q, h_kv, d_qk, d_v,
-        sm_scale, sm_scale * LOG_2_E,
-        num_blocks, page_block_size, topk, ModelType::MODEL1,
-        q.data_ptr(), kv.data_ptr(), {}, {},
-        indices.data_ptr<int>(), ku::get_optional_tensor_ptr<int>(topk_length),
+        b,
+        s_q,
+        h_q,
+        h_kv,
+        d_qk,
+        d_v,
+        sm_scale,
+        sm_scale * LOG_2_E,
+        num_blocks,
+        page_block_size,
+        topk,
+        ModelType::MODEL1,
+        q.data_ptr(),
+        kv.data_ptr(),
+        {},
+        {},
+        indices.data_ptr<int>(),
+        ku::get_optional_tensor_ptr<int>(topk_length),
         ku::get_optional_tensor_ptr<float>(attn_sink),
-        lse.data_ptr<float>(), reinterpret_cast<bf16*>(out.data_ptr()),
-        extra_num_blocks, extra_page_block_size, extra_topk,
+        lse.data_ptr<float>(),
+        reinterpret_cast<bf16*>(out.data_ptr()),
+        extra_num_blocks,
+        extra_page_block_size,
+        extra_topk,
         have_extra_kv ? extra_kv->data_ptr() : nullptr,
         ku::get_optional_tensor_ptr<int>(extra_indices),
         ku::get_optional_tensor_ptr<int>(extra_topk_length),
-        int64_stride_to_int(q.stride(0)), int64_stride_to_int(q.stride(1)), int64_stride_to_int(q.stride(2)),
-        int64_stride_to_int(kv.stride(0)), int64_stride_to_int(kv.stride(1)),
-        int64_stride_to_int(indices.stride(0)), int64_stride_to_int(indices.stride(1)),
-        int64_stride_to_int(lse.stride(0)), int64_stride_to_int(lse.stride(1)),
-        int64_stride_to_int(out.stride(0)), int64_stride_to_int(out.stride(1)), int64_stride_to_int(out.stride(2)),
+        int64_stride_to_int(q.stride(0)),
+        int64_stride_to_int(q.stride(1)),
+        int64_stride_to_int(q.stride(2)),
+        int64_stride_to_int(kv.stride(0)),
+        int64_stride_to_int(kv.stride(1)),
+        int64_stride_to_int(indices.stride(0)),
+        int64_stride_to_int(indices.stride(1)),
+        int64_stride_to_int(lse.stride(0)),
+        int64_stride_to_int(lse.stride(1)),
+        int64_stride_to_int(out.stride(0)),
+        int64_stride_to_int(out.stride(1)),
+        int64_stride_to_int(out.stride(2)),
         have_extra_kv ? int64_stride_to_int(extra_kv->stride(0)) : 0,
         have_extra_kv ? int64_stride_to_int(extra_kv->stride(1)) : 0,
         have_extra_kv ? int64_stride_to_int(extra_indices->stride(0)) : 0,
         have_extra_kv ? int64_stride_to_int(extra_indices->stride(1)) : 0,
         at::cuda::getCurrentCUDAStream().stream(),
-        nullptr, nullptr, 0, 0, 0, 0, 0,
+        nullptr,
+        nullptr,
+        0,
+        0,
+        0,
+        0,
+        0,
         reinterpret_cast<DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
-        num_splits->data_ptr<int>(), num_sm_parts
-    };
+        num_splits->data_ptr<int>(),
+        num_sm_parts};
     for (int i = 0; i < 8; ++i) {
         params.w1[i] = w1[i];
         params.w2[i] = w2[i];
@@ -186,21 +213,32 @@ dual_mxfp8_sparse_attn_decode_interface(
     params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
     params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
 
-    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<
-        SparseAttnFwdMode::DecodeWithSplitKV, 512>(params);
+    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV,
+                                                            512>(params);
 
-    CombineParams combine = {
-        b, s_q, h_q, d_v,
-        lse.data_ptr<float>(), out.data_ptr(),
-        int64_stride_to_int(lse.stride(0)), int64_stride_to_int(lse.stride(1)),
-        int64_stride_to_int(out.stride(0)), int64_stride_to_int(out.stride(1)), int64_stride_to_int(out.stride(2)),
-        lse_accum.data_ptr<float>(), o_accum.data_ptr<float>(),
-        params.stride_lse_accum_split, params.stride_lse_accum_s_q,
-        params.stride_o_accum_split, params.stride_o_accum_s_q, params.stride_o_accum_h_q,
-        params.tile_scheduler_metadata_ptr, params.num_splits_ptr, num_sm_parts,
-        ku::get_optional_tensor_ptr<float>(attn_sink),
-        at::cuda::getCurrentCUDAStream().stream()
-    };
+    CombineParams combine = {b,
+                             s_q,
+                             h_q,
+                             d_v,
+                             lse.data_ptr<float>(),
+                             out.data_ptr(),
+                             int64_stride_to_int(lse.stride(0)),
+                             int64_stride_to_int(lse.stride(1)),
+                             int64_stride_to_int(out.stride(0)),
+                             int64_stride_to_int(out.stride(1)),
+                             int64_stride_to_int(out.stride(2)),
+                             lse_accum.data_ptr<float>(),
+                             o_accum.data_ptr<float>(),
+                             params.stride_lse_accum_split,
+                             params.stride_lse_accum_s_q,
+                             params.stride_o_accum_split,
+                             params.stride_o_accum_s_q,
+                             params.stride_o_accum_h_q,
+                             params.tile_scheduler_metadata_ptr,
+                             params.num_splits_ptr,
+                             num_sm_parts,
+                             ku::get_optional_tensor_ptr<float>(attn_sink),
+                             at::cuda::getCurrentCUDAStream().stream()};
     smxx::decode::run_flash_mla_combine_kernel<bf16>(combine);
     return {out, lse.transpose(1, 2), tile_scheduler_metadata, num_splits};
 }

@@ -8,21 +8,21 @@
 namespace smxx::decode {
 
 __global__ void __launch_bounds__(32, 1, 1)
-get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params) {
-    int *seqlens_k_ptr = params.seqlens_k_ptr;
-    DecodingSchedMeta *tile_scheduler_metadata_ptr = params.tile_scheduler_metadata_ptr;
-    int *num_splits_ptr = params.num_splits_ptr;
+    get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params) {
+    int* seqlens_k_ptr = params.seqlens_k_ptr;
+    DecodingSchedMeta* tile_scheduler_metadata_ptr = params.tile_scheduler_metadata_ptr;
+    int* num_splits_ptr = params.num_splits_ptr;
     int batch_size = params.b;
     int block_size_n = params.block_size_n;
     int fixed_overhead_num_blocks = params.fixed_overhead_num_blocks;
     int num_sm_parts = params.num_sm_parts;
 
     extern __shared__ int shared_mem[];
-    int* num_blocks_shared = shared_mem; // [batch_size]
-    int* num_splits_shared = shared_mem + batch_size; // [batch_size+1]
-    int* seqlens_k_shared = shared_mem + batch_size*2+1; // [batch_size]
-    int* first_block_idx_shared = shared_mem + batch_size*3+1; // [batch_size]
-    int* last_block_idx_shared = shared_mem + batch_size*4+1; // [batch_size]
+    int* num_blocks_shared = shared_mem;                           // [batch_size]
+    int* num_splits_shared = shared_mem + batch_size;              // [batch_size+1]
+    int* seqlens_k_shared = shared_mem + batch_size * 2 + 1;       // [batch_size]
+    int* first_block_idx_shared = shared_mem + batch_size * 3 + 1; // [batch_size]
+    int* last_block_idx_shared = shared_mem + batch_size * 4 + 1;  // [batch_size]
 
     int total_num_blocks = 0;
     for (int i = threadIdx.x; i < batch_size; i += 32) {
@@ -33,19 +33,23 @@ get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params)
         } else {
             // Sparse model, cur_s_k = topk (+ extra topk)
             cur_s_k = params.topk_length ? __ldg(params.topk_length + i) : params.topk;
-            if (cur_s_k == 0) cur_s_k = 1;  // Ensure the main loop will never be empty
+            if (cur_s_k == 0)
+                cur_s_k = 1; // Ensure the main loop will never be empty
             if (params.extra_topk) {
                 cur_s_k = ku::ceil(cur_s_k, block_size_n);
-                cur_s_k += params.extra_topk_length ? __ldg(params.extra_topk_length + i) : params.extra_topk;
+                cur_s_k += params.extra_topk_length ? __ldg(params.extra_topk_length + i)
+                                                    : params.extra_topk;
             }
         }
         seqlens_k_shared[i] = cur_s_k;
         int first_token_idx = 0;
-        int last_token_idx = max(cur_s_k-1, 0);
+        int last_token_idx = max(cur_s_k - 1, 0);
         int cur_first_block_idx = first_token_idx / block_size_n;
         int cur_last_block_idx = last_token_idx / block_size_n;
-        // NOTE Should attend to tokens [first_token_idx, last_token_idx], i.e. blocks [cur_first_block_idx, cur_last_block_idx]
-        // NOTE if seqlens_k is 0, then first_token_idx == last_token_idx == cur_first_block_idx == cur_last_block_idx == 0. So the sequence will have 1 block. We will correct this later in this kernel.
+        // NOTE Should attend to tokens [first_token_idx, last_token_idx], i.e. blocks
+        // [cur_first_block_idx, cur_last_block_idx] NOTE if seqlens_k is 0, then first_token_idx ==
+        // last_token_idx == cur_first_block_idx == cur_last_block_idx == 0. So the sequence will
+        // have 1 block. We will correct this later in this kernel.
         int num_blocks = cur_last_block_idx - cur_first_block_idx + 1;
         total_num_blocks += num_blocks + fixed_overhead_num_blocks;
         num_blocks_shared[i] = num_blocks;
@@ -89,10 +93,17 @@ get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params)
                 }
             }
             cur_meta.end_req_idx = now_block > 0 ? now_req_idx : now_req_idx - 1;
-            cur_meta.end_block_idx = now_block > 0 ? now_block + first_block_idx_shared[now_req_idx] : (seqlens_k_shared[now_req_idx-1] == 0 ? 0 : last_block_idx_shared[now_req_idx-1] + 1);
-            cur_meta.is_last_req_splitted = cur_meta.end_block_idx != last_block_idx_shared[cur_meta.end_req_idx] + 1 && seqlens_k_shared[cur_meta.end_req_idx] != 0;
+            cur_meta.end_block_idx = now_block > 0
+                                         ? now_block + first_block_idx_shared[now_req_idx]
+                                         : (seqlens_k_shared[now_req_idx - 1] == 0
+                                                ? 0
+                                                : last_block_idx_shared[now_req_idx - 1] + 1);
+            cur_meta.is_last_req_splitted =
+                cur_meta.end_block_idx != last_block_idx_shared[cur_meta.end_req_idx] + 1 &&
+                seqlens_k_shared[cur_meta.end_req_idx] != 0;
             if (cur_meta.begin_req_idx == cur_meta.end_req_idx) {
-                cur_meta.is_first_req_splitted = cur_meta.is_last_req_splitted = cur_meta.is_first_req_splitted || cur_meta.is_last_req_splitted;
+                cur_meta.is_first_req_splitted = cur_meta.is_last_req_splitted =
+                    cur_meta.is_first_req_splitted || cur_meta.is_last_req_splitted;
             }
             tile_scheduler_metadata_ptr[i] = cur_meta;
         }
@@ -105,11 +116,12 @@ get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params)
     }
 }
 
-void run_get_decoding_sched_meta_kernel(GetDecodeSchedMetaParams &params) {
-    int smem_size = sizeof(int) * (params.b*5+1);
-    CHECK_CUDA(cudaFuncSetAttribute(get_mla_metadata_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+void run_get_decoding_sched_meta_kernel(GetDecodeSchedMetaParams& params) {
+    int smem_size = sizeof(int) * (params.b * 5 + 1);
+    CHECK_CUDA(cudaFuncSetAttribute(get_mla_metadata_kernel,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
     get_mla_metadata_kernel<<<1, 32, smem_size, params.stream>>>(params);
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 
-}
+} // namespace smxx::decode

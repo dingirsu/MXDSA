@@ -12,15 +12,9 @@
 namespace {
 
 std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
-    const at::Tensor& q,
-    const at::Tensor& kv,
-    const at::Tensor& indices,
-    double sm_scale,
-    const std::vector<uint32_t>& w1,
-    const std::vector<uint32_t>& w2,
-    const std::optional<at::Tensor>& attn_sink,
-    const std::optional<at::Tensor>& topk_length
-) {
+    const at::Tensor& q, const at::Tensor& kv, const at::Tensor& indices, double sm_scale,
+    const std::vector<uint32_t>& w1, const std::vector<uint32_t>& w2,
+    const std::optional<at::Tensor>& attn_sink, const std::optional<at::Tensor>& topk_length) {
     using bf16 = __nv_bfloat16;
 
     Arch arch;
@@ -44,16 +38,15 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     constexpr int kv_scale_slot_bytes = 16;
     constexpr int kv_bytes_per_token = d_qk + kv_scale_slot_bytes;
 
-    TORCH_CHECK(s_q > 0 && s_q % 2 == 0,
-                "q must contain an even, positive number of query tokens");
+    TORCH_CHECK(s_q > 0 && s_q % 2 == 0, "q must contain an even, positive number of query tokens");
     TORCH_CHECK(h_q == 64, "q must have shape [s_q, 64, 528]");
     TORCH_CHECK(h_kv == 1, "kv must have shape [s_kv, 1, 528]");
-    TORCH_CHECK(q.size(2) == q_bytes_per_head,
-                "q must store 512 E4M3 bytes followed by a replicated 16-byte UE8M0 scale slot per head");
+    TORCH_CHECK(
+        q.size(2) == q_bytes_per_head,
+        "q must store 512 E4M3 bytes followed by a replicated 16-byte UE8M0 scale slot per head");
     TORCH_CHECK(kv.size(2) == kv_bytes_per_token,
                 "kv must provide a 528-byte envelope per token for replicated page-tail scales");
-    TORCH_CHECK(topk > 0 && topk % 64 == 0,
-                "topk must be a positive multiple of 64");
+    TORCH_CHECK(topk > 0 && topk % 64 == 0, "topk must be a positive multiple of 64");
     TORCH_CHECK(w1.size() == 8 && w2.size() == 8,
                 "w1 and w2 must each contain 8 pre-expanded TMEM scale words");
 
@@ -85,44 +78,47 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     at::Tensor lse = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
 
     MxFp8SparseAttnFwdParams params = {
-        s_q, s_kv, h_q, h_kv, d_qk, d_v, topk,
-        static_cast<float>(sm_scale), static_cast<float>(sm_scale) * LOG_2_E,
+        s_q,
+        s_kv,
+        h_q,
+        h_kv,
+        d_qk,
+        d_v,
+        topk,
+        static_cast<float>(sm_scale),
+        static_cast<float>(sm_scale) * LOG_2_E,
         q.data_ptr(),
         kv.data_ptr(),
-        nullptr,  // The dual kernel reads complete K scales from the page tail.
+        nullptr, // The dual kernel reads complete K scales from the page tail.
         indices.data_ptr<int>(),
         ku::get_optional_tensor_ptr<float>(attn_sink),
         ku::get_optional_tensor_ptr<int>(topk_length),
-        int64_stride_to_int(q.stride(0)), int64_stride_to_int(q.stride(1)),
-        int64_stride_to_int(kv.stride(0)), int64_stride_to_int(kv.stride(1)),
-        int64_stride_to_int(indices.stride(0)), int64_stride_to_int(indices.stride(1)),
+        int64_stride_to_int(q.stride(0)),
+        int64_stride_to_int(q.stride(1)),
+        int64_stride_to_int(kv.stride(0)),
+        int64_stride_to_int(kv.stride(1)),
+        int64_stride_to_int(indices.stride(0)),
+        int64_stride_to_int(indices.stride(1)),
         reinterpret_cast<bf16*>(out.data_ptr()),
         max_logits.data_ptr<float>(),
         lse.data_ptr<float>(),
         arch.num_sms,
         at::cuda::getCurrentCUDAStream().stream(),
-        {}, {}
-    };
+        {},
+        {}};
     for (int i = 0; i < 8; ++i) {
         params.w1[i] = w1[i];
         params.w2[i] = w2[i];
     }
 
-    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<
-        SparseAttnFwdMode::Prefill, 512
-    >(params);
+    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(
+        params);
     return {out, max_logits, lse};
 }
 
-}  // namespace
+} // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def(
-        "dual_mxfp8_head64_sparse_prefill_fwd",
-        &dual_mxfp8_head64_sparse_prefill_interface
-    );
-    m.def(
-        "dual_mxfp8_sparse_decode_fwd",
-        &dual_mxfp8_sparse_attn_decode_interface
-    );
+    m.def("dual_mxfp8_head64_sparse_prefill_fwd", &dual_mxfp8_head64_sparse_prefill_interface);
+    m.def("dual_mxfp8_sparse_decode_fwd", &dual_mxfp8_sparse_attn_decode_interface);
 }
