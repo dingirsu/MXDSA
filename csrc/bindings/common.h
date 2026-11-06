@@ -1,44 +1,32 @@
 #pragma once
 
-#include <functional>
+#include <cstdint>
+#include <limits>
+#include <optional>
 
-#include <torch/python.h>
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 
-#include "common/host.h"
+static constexpr float LOG_2_E = 1.44269504f;
 
-template <typename T>
-static inline bool check_optional_tensor(const T& tensor_or_opt,
-                                         const std::function<bool(const at::Tensor&)>& check_fn) {
-    if constexpr (std::is_same<T, at::Tensor>::value) {
-        return check_fn(tensor_or_opt);
-    } else {
-        if (tensor_or_opt.has_value()) {
-            return check_fn(tensor_or_opt.value());
-        } else {
-            return true;
-        }
-    }
+inline int int64_stride_to_int(int64_t stride) {
+    TORCH_CHECK(stride <= std::numeric_limits<int>::max(), "Stride exceeds int32 limit: ", stride);
+    return static_cast<int>(stride);
 }
 
-template <typename PtrT> static inline PtrT* get_tensor_ptr(const at::Tensor& tensor) {
-    if (tensor.has_storage()) {
-        return (PtrT*)tensor.data_ptr();
-    } else {
-        return nullptr;
-    }
+template <typename Check>
+inline bool check_optional_tensor(const at::Tensor& tensor, const Check& check) {
+    return check(tensor);
 }
 
-template <typename PtrT, typename T>
-static inline PtrT* get_optional_tensor_ptr(const T& tensor_or_opt) {
-    if constexpr (std::is_same<T, at::Tensor>::value) {
-        return get_tensor_ptr<PtrT>(tensor_or_opt);
-    } else {
-        if (tensor_or_opt.has_value()) {
-            return get_tensor_ptr<PtrT>(*tensor_or_opt);
-        } else {
-            return nullptr;
-        }
-    }
+template <typename Check>
+inline bool check_optional_tensor(const std::optional<at::Tensor>& tensor, const Check& check) {
+    return !tensor || check(*tensor);
+}
+
+template <typename T> inline T* get_optional_tensor_ptr(const std::optional<at::Tensor>& tensor) {
+    return tensor && tensor->has_storage() ? static_cast<T*>(tensor->data_ptr()) : nullptr;
 }
 
 #define CHECK_DEVICE(tensor)                                                                       \

@@ -4,7 +4,7 @@
 #include <pybind11/stl.h>
 #include <torch/extension.h>
 
-#include "bindings/api_common.h"
+#include "bindings/common.h"
 #include "common/params.h"
 #include "attention/launch.h"
 #include "bindings/dual_mxfp8_sparse_decode.h"
@@ -14,9 +14,6 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     const std::vector<uint32_t>& w1, const std::vector<uint32_t>& w2,
     const std::optional<at::Tensor>& attn_sink, const std::optional<at::Tensor>& topk_length) {
     using bf16 = __nv_bfloat16;
-
-    Arch arch;
-    TORCH_CHECK(arch.is_sm100f(), "Dual MXFP8 head64 sparse prefill requires SM100f.");
 
     CHECK_NDIM(q, 3);
     CHECK_NDIM(kv, 3);
@@ -70,6 +67,8 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     CHECK_SHAPE(topk_length, num_q_pairs);
 
     at::cuda::CUDAGuard device_guard{static_cast<char>(q.get_device())};
+    const auto* device = at::cuda::getCurrentDeviceProperties();
+    TORCH_CHECK(device->major == 10, "Dual MXFP8 head64 sparse prefill requires SM100f.");
     const auto opts = q.options();
     at::Tensor out = torch::empty({s_q, h_q, d_v}, opts.dtype(torch::kBFloat16));
     at::Tensor max_logits = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
@@ -100,7 +99,7 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         reinterpret_cast<bf16*>(out.data_ptr()),
         max_logits.data_ptr<float>(),
         lse.data_ptr<float>(),
-        arch.num_sms,
+        device->multiProcessorCount,
         at::cuda::getCurrentCUDAStream().stream(),
         {},
         {}};

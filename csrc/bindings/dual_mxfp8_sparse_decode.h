@@ -1,17 +1,15 @@
 #pragma once
 
 #include <vector>
-#include <pybind11/stl.h>
+#include <optional>
+#include <tuple>
 
-#include "bindings/api_common.h"
+#include "bindings/common.h"
 #include "common/params.h"
 #include "attention/launch.h"
 #include "split_kv/scheduler.h"
 #include "split_kv/combine.h"
 
-// Decode entry point for the dual-MXFP8 head64 kernel. It is deliberately
-// separate from mxfp8_sparse_attn_decode_interface: the latter is the legacy
-// MXFP8 implementation and owns the kv_scale_w input.
 static std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
 dual_mxfp8_sparse_attn_decode_interface(
     const at::Tensor& q, const at::Tensor& kv, const at::Tensor& indices,
@@ -25,8 +23,6 @@ dual_mxfp8_sparse_attn_decode_interface(
     constexpr int q_bytes = d + 16;
     constexpr int kv_bytes = d + 16;
 
-    Arch arch = Arch();
-    TORCH_CHECK(arch.is_sm100f(), "Dual MXFP8 head64 decode requires SM100f.");
     CHECK_NDIM(q, 4);
     CHECK_NDIM(kv, 4);
     CHECK_NDIM(indices, 3);
@@ -111,11 +107,13 @@ dual_mxfp8_sparse_attn_decode_interface(
     }
 
     at::cuda::CUDAGuard device_guard{static_cast<char>(q.get_device())};
+    const auto* device = at::cuda::getCurrentDeviceProperties();
+    TORCH_CHECK(device->major == 10, "Dual MXFP8 head64 decode requires SM100f.");
     auto opts = q.options();
     at::Tensor out = torch::empty({b, s_q, h_q, d_v}, opts.dtype(torch::kBFloat16));
     at::Tensor lse = torch::empty({b, s_q, h_q}, opts.dtype(torch::kFloat));
 
-    const int num_sm_parts = std::max(arch.num_sms / s_q, 1);
+    const int num_sm_parts = std::max(device->multiProcessorCount / s_q, 1);
     constexpr int fixed_overhead_num_blocks = 5;
     constexpr int block_size_topk = 64;
     if (!tile_scheduler_metadata.has_value()) {
