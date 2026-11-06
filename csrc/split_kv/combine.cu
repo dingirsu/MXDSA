@@ -1,5 +1,5 @@
 #include "ptx/common.cuh"
-#include "decode/combine.h"
+#include "split_kv/combine.h"
 
 #include <math_constants.h>
 

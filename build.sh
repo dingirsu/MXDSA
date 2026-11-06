@@ -56,7 +56,7 @@ flags=(-O3 -std=c++20 -DNDEBUG -D_USE_MATH_DEFINES -D_GLIBCXX_USE_CXX11_ABI=1
     --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math --compiler-options=-fPIC
     -lineinfo --ptxas-options=-v,--register-usage-level=10,--warn-on-spills
     -gencode arch=compute_100f,code=sm_100f -gencode arch=compute_103f,code=sm_103f)
-for source in attention/prefill attention/decode decode/get_decoding_sched_meta decode/combine; do
+for source in attention/prefill attention/decode split_kv/scheduler split_kv/combine; do
     unit=${source##*/}
     "$CUDA_HOME/bin/nvcc" -Icsrc "${flags[@]}" -c "csrc/$source.cu" -o "$BUILD_DIR/$unit.o"
     objects+=("$BUILD_DIR/$unit.o")

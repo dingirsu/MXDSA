@@ -5,9 +5,9 @@
 
 #include "bindings/api_common.h"
 #include "common/params.h"
-#include "attention/phase1.h"
-#include "decode/get_decoding_sched_meta.h"
-#include "decode/combine.h"
+#include "attention/launch.h"
+#include "split_kv/scheduler.h"
+#include "split_kv/combine.h"
 
 // Decode entry point for the dual-MXFP8 head64 kernel. It is deliberately
 // separate from mxfp8_sparse_attn_decode_interface: the latter is the legacy

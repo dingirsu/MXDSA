@@ -1,5 +1,5 @@
 #include "ptx/common.cuh"
-#include "decode/get_decoding_sched_meta.h"
+#include "split_kv/scheduler.h"
 
 #include <cuda_runtime_api.h>
 

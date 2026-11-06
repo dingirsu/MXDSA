@@ -6,7 +6,7 @@
 
 #include "bindings/api_common.h"
 #include "common/params.h"
-#include "attention/phase1.h"
+#include "attention/launch.h"
 #include "bindings/dual_mxfp8_sparse_decode.h"
 
 namespace {
