@@ -9,28 +9,19 @@
 
 #include "attention/config.h"
 #include "common/host.h"
-#include "ptx/ptx.cuh"
-#include "ptx/ptx_copy.cuh"
-#include "ptx/ptx_extra.cuh"
-#include "ptx/ptx_tmem.cuh"
+#include "ptx/barrier.cuh"
+#include "ptx/clc.cuh"
+#include "ptx/math.cuh"
+#include "ptx/memory.cuh"
+#include "ptx/mma.cuh"
+#include "ptx/tma.cuh"
+#include "ptx/tmem.cuh"
+#include "ptx/types.cuh"
+#include "ptx/warp.cuh"
 
 namespace sm100::dual_mxfp8::head64 {
 
 using FwdMode = SparseAttnFwdMode;
-
-// Route completion to CTA1, which issues SV in both prefill and decode.
-DEVICE void tma_gather4_cta1(const void* desc_ptr, ptx::transac_bar_t& mbar, void* dst, int col,
-                             int4 rows, int64_t hint) {
-    uint32_t dst_addr = ptx::cast_smem_ptr_to_uint(dst);
-    uint32_t bar_addr = (ptx::cast_smem_ptr_to_uint(&mbar) & ptx::Sm100MmaPeerBitMask) |
-                        uint32_t(~ptx::Sm100MmaPeerBitMask);
-    asm volatile(
-        "cp.async.bulk.tensor.2d.shared::cta.global.tile::gather4.mbarrier::complete_tx::bytes.cta_group::2.L2::cache_hint [%0], [%1, {%2, %3, %4, %5, %6}], [%7], %8;" ::
-            "r"(dst_addr),
-        "l"(desc_ptr), "r"(col), "r"(rows.x), "r"(rows.y), "r"(rows.z), "r"(rows.w), "r"(bar_addr),
-        "l"(hint)
-        : "memory");
-}
 
 DEVICE void copy_k_scale_smem_to_tmem(void* ptr, uint32_t col) {
     uint64_t desc = 0x0000400800000000ull | (ptx::cast_smem_ptr_to_uint(ptr) >> 4);
@@ -50,25 +41,6 @@ DEVICE void store_s_scale_to_tmem(uint32_t tmem_col, int warp_in_warpgroup, uint
         ptx::SM100_TMEM_STORE_32dp32b1x::copy(packed_scale, warp_dp_addr + row_group);
     }
 }
-
-// SM103 can load logits and compute a per-lane max in one instruction.
-// SM100 keeps the ordinary load/reduction path below.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
-DEVICE void load_native_p_and_max(uint32_t tmem_col, float (&p)[32], float& p_max) {
-    asm volatile("tcgen05.ld.red.sync.aligned.32x32b.x32.max.f32 "
-                 "{%0, %1, %2, %3, %4, %5, %6, %7, "
-                 "%8, %9, %10, %11, %12, %13, %14, %15, "
-                 "%16, %17, %18, %19, %20, %21, %22, %23, "
-                 "%24, %25, %26, %27, %28, %29, %30, %31}, %32, [%33];"
-                 : "=f"(p[0]), "=f"(p[1]), "=f"(p[2]), "=f"(p[3]), "=f"(p[4]), "=f"(p[5]),
-                   "=f"(p[6]), "=f"(p[7]), "=f"(p[8]), "=f"(p[9]), "=f"(p[10]), "=f"(p[11]),
-                   "=f"(p[12]), "=f"(p[13]), "=f"(p[14]), "=f"(p[15]), "=f"(p[16]), "=f"(p[17]),
-                   "=f"(p[18]), "=f"(p[19]), "=f"(p[20]), "=f"(p[21]), "=f"(p[22]), "=f"(p[23]),
-                   "=f"(p[24]), "=f"(p[25]), "=f"(p[26]), "=f"(p[27]), "=f"(p[28]), "=f"(p[29]),
-                   "=f"(p[30]), "=f"(p[31]), "=f"(p_max)
-                 : "r"(tmem_col));
-}
-#endif
 
 template <FwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_kernel_devfunc(
@@ -448,19 +420,13 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             (!IS_DECODE || 2 * args.s_q_idx + cta_idx < params.s_q)) {
                             // O is a streaming write; prefer retaining the
                             // repeatedly gathered KV data in L2 instead.
-                            const uint64_t desc =
-                                reinterpret_cast<uint64_t>(&tma_params.tensor_map_o);
-                            const uint32_t src = ptx::cast_smem_ptr_to_uint(o_storage);
                             const uint64_t cache_hint =
                                 ptx::create_simple_cache_policy<ptx::CacheHint::EVICT_FIRST>();
-                            asm volatile(
-                                "cp.async.bulk.tensor.5d.global.shared::cta.bulk_group.L2::cache_hint "
-                                "[%0, {%2, %3, %4, %5, %6}], [%1], %7;" ::"l"(desc),
-                                "r"(src), "r"(0), "r"(0), "r"(chunk * 2), "r"(0),
-                                "r"((IS_DECODE ? args.batch_idx * params.s_q : 0) +
-                                    2 * args.s_q_idx + cta_idx),
-                                "l"(cache_hint)
-                                : "memory");
+                            ptx::SM90_TMA_STORE_5D::copy(
+                                &tma_params.tensor_map_o, o_storage, 0, 0, chunk * 2, 0,
+                                (IS_DECODE ? args.batch_idx * params.s_q : 0) +
+                                    2 * args.s_q_idx + cta_idx,
+                                cache_hint);
                             ptx::tma_store_arrive();
                         }
                     }
@@ -857,7 +823,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 static_assert(D_K == 512);
                                 UNROLL
                                 for (int local_col = 0; local_col < (D_K / 128) / 2; ++local_col) {
-                                    tma_gather4_cta1(
+                                    ptx::tma_gather4_cta1(
                                         &tma_params.tensor_map_kv, smem.bar_V_full[k_buf_idx],
                                         smem.V[k_buf_idx].data() + row * 128 +
                                             local_col * 128 * B_TOPK,
@@ -921,7 +887,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 static_assert(D_K == 512);
                                 UNROLL
                                 for (int local_col = 0; local_col < (D_K / 128) / 2; ++local_col) {
-                                    tma_gather4_cta1(
+                                    ptx::tma_gather4_cta1(
                                         &tma_params.tensor_map_kv, smem.bar_V_full[k_buf_idx],
                                         smem.V[k_buf_idx].data() + row * 128 +
                                             local_col * 128 * B_TOPK,
@@ -979,15 +945,15 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                     smem.index_storage.tma_coord[index_buf_idx] + row);
                                 UNROLL
                                 for (int col = 0; col < (D_K / 128) / 2; ++col) {
-                                    tma_gather4_cta1(block_idx >= args.num_orig_kv_blocks
-                                                         ? &tma_params.tensor_map_extra_kv
-                                                         : &tma_params.tensor_map_kv,
-                                                     smem.bar_V_full[k_buf_idx],
-                                                     smem.V[k_buf_idx].data() + row * 128 +
-                                                         col * 128 * B_TOPK,
-                                                     col * 128 + cta_idx * (D_K / 2), coords,
-                                                     ptx::create_simple_cache_policy<
-                                                         ptx::CacheHint::EVICT_LAST>());
+                                    ptx::tma_gather4_cta1(
+                                        block_idx >= args.num_orig_kv_blocks
+                                            ? &tma_params.tensor_map_extra_kv
+                                            : &tma_params.tensor_map_kv,
+                                        smem.bar_V_full[k_buf_idx],
+                                        smem.V[k_buf_idx].data() + row * 128 + col * 128 * B_TOPK,
+                                        col * 128 + cta_idx * (D_K / 2), coords,
+                                        ptx::create_simple_cache_policy<
+                                            ptx::CacheHint::EVICT_LAST>());
                                 }
                             }
                         }
@@ -1165,12 +1131,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             abs_pos = block_idx * B_TOPK + lane_idx * 2;
                             if (raw_staged) {
                                 if (abs_pos + 1 < params.topk) {
-                                    const uint32_t src_addr =
-                                        ptx::cast_smem_ptr_to_uint(raw_src + abs_pos);
-                                    asm volatile("ld.shared.v2.u32 {%0,%1}, [%2];"
-                                                 : "=r"(my_indices[0]), "=r"(my_indices[1])
-                                                 : "r"(src_addr)
-                                                 : "memory");
+                                    ptx::ld_shared_v2_u32(raw_src + abs_pos, my_indices);
                                 } else {
                                     my_indices[0] = my_indices[1] = -1;
                                 }
@@ -1183,12 +1144,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             // size, or even int2-aligned when extra_topk is odd.
                             if (raw_staged) {
                                 if (abs_pos + 1 < params.extra_topk) {
-                                    const uint32_t src_addr = ptx::cast_smem_ptr_to_uint(
-                                        raw_src + raw_extra_start + abs_pos);
-                                    asm volatile("ld.shared.v2.u32 {%0,%1}, [%2];"
-                                                 : "=r"(my_indices[0]), "=r"(my_indices[1])
-                                                 : "r"(src_addr)
-                                                 : "memory");
+                                    ptx::ld_shared_v2_u32(raw_src + raw_extra_start + abs_pos,
+                                                        my_indices);
                                 } else {
                                     my_indices[0] = my_indices[1] = -1;
                                 }
@@ -1242,7 +1199,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                     reinterpret_cast<const uint8_t*>(
                                         IS_EXTRA_BLOCK ? params.extra_kv : params.kv) +
                                     scale_offsets[i];
-                                asm volatile("prefetch.global.L1 [%0];" ::"l"(ptr));
+                                ptx::prefetch_global_l1(ptr);
                             }
                         }
                         ptx::st_shared(smem.index_storage.k_scale_offset[index_buf_idx] +
@@ -1299,8 +1256,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 const int row = scale_warp * 64 + part * 32 + lane_idx;
                                 if (k + 1 < args.end_block_idx &&
                                     (scale_warp == 0 || (k + 1) * B_TOPK + 64 < params.topk)) {
-                                    asm volatile("prefetch.global.L1 [%0];" ::"l"(tile_indices +
-                                                                                  B_TOPK + row));
+                                    ptx::prefetch_global_l1(tile_indices + B_TOPK + row);
                                 }
                                 tile_token[part] = scale_warp == 0 || k * B_TOPK + 64 < params.topk
                                                        ? __ldg(tile_indices + row)
@@ -1495,15 +1451,11 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 using ValidMask = std::conditional_t<B_TOPK == 128, uint64_t, uint32_t>;
                 ValidMask valid;
                 if constexpr (FUSED_VALIDITY) {
-                    const uint32_t mask_addr = ptx::cast_smem_ptr_to_uint(
-                        reinterpret_cast<ValidMask*>(smem.is_k_valid[indices_buf_idx]) +
-                        local_warp_idx / 2);
                     // Complete the mask read before allowing the producer
                     // to reuse its shared slot, even while QK is pending.
-                    asm volatile("ld.acquire.cta.shared.b64 %0, [%1];"
-                                 : "=l"(valid)
-                                 : "r"(mask_addr)
-                                 : "memory");
+                    valid = ptx::ld_shared_acquire_u64(
+                        reinterpret_cast<ValidMask*>(smem.is_k_valid[indices_buf_idx]) +
+                        local_warp_idx / 2);
                     smem.bar_valid_coord_scales_empty[indices_buf_idx].arrive();
                 }
                 smem.bar_QK_done[k_buf_idx].wait(k_bar_phase);
@@ -1528,13 +1480,13 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
                         if constexpr (B_TOPK == 128) {
                             float max0, max1;
-                            load_native_p_and_max(tmem_cols::P, *reinterpret_cast<float (*)[32]>(p),
-                                                  max0);
-                            load_native_p_and_max(tmem_cols::P + 32,
-                                                  *reinterpret_cast<float (*)[32]>(p + 32), max1);
+                            ptx::tmem_ld_32dp32b32x_max(
+                                tmem_cols::P, *reinterpret_cast<float (*)[32]>(p), max0);
+                            ptx::tmem_ld_32dp32b32x_max(
+                                tmem_cols::P + 32, *reinterpret_cast<float (*)[32]>(p + 32), max1);
                             p_max = max(max0, max1);
                         } else {
-                            load_native_p_and_max(tmem_cols::P, p, p_max);
+                            ptx::tmem_ld_32dp32b32x_max(tmem_cols::P, p, p_max);
                         }
 #else
                         ptx::tmem_ld_32dp32bNx<NUM_ELEMS_PER_THREAD>(tmem_cols::P, p);

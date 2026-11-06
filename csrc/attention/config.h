@@ -1,12 +1,13 @@
 #pragma once
 #include "attention/phase1.h"
-#include "ptx/ptx.cuh"
+#include "ptx/barrier.cuh"
+#include "ptx/clc.cuh"
+#include "ptx/types.cuh"
 #include "attention/layout.cuh"
 
 #include <math_constants.h>
 
 #include "common/params.h"
-#include "ptx/ptx_extra.cuh"
 
 namespace sm100::dual_mxfp8::head64 {
 

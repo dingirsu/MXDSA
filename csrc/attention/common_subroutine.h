@@ -1,7 +1,7 @@
 #pragma once
-#include "ptx/ptx.cuh"
-#include "ptx/ptx_extra.cuh"
-#include "ptx/ptx_tmem.cuh"
+#include "ptx/math.cuh"
+#include "ptx/memory.cuh"
+#include "ptx/tmem.cuh"
 namespace sm100 {
 template <int D_V, int CHUNK_SIZE, int TMEM_COL_START> DEVICE void rescale_O(float scale_factor) {
     float2 scale_factor_float2 = {scale_factor, scale_factor};

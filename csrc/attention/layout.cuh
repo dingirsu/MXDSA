@@ -1,5 +1,5 @@
 #pragma once
-#include "ptx/ptx.cuh"
+#include "ptx/mma.cuh"
 namespace ptx {
 // Expansion of UMMA Layout_K_SW{128,64}/INTER atoms, in elements.
 // Tiling repeats the K atom after all MN rows. Swizzle<B,4,3> acts in bytes.
@@ -10,13 +10,6 @@ template <int MN, int SW, class T> DEVICE T* k_major_ptr(T* base, int row, int c
     if constexpr (SW > 16)
         b ^= (b >> 3) & (SW - 16);
     return reinterpret_cast<T*>(b);
-}
-DEVICE void mma_mxfp8(uint64_t a, uint64_t b, uint32_t c, uint32_t idesc, uint32_t sa, uint32_t sb,
-                      bool accumulate) {
-    asm volatile(
-        "{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::mxf8f6f4.block_scale [%0], %1, %2, %3, [%5], [%6], p; }" ::
-            "r"(c),
-        "l"(a), "l"(b), "r"(idesc), "r"(uint32_t(accumulate)), "r"(sa), "r"(sb));
 }
 // Descriptor constants and fragment strides are checked by tests/layout_probe.cu.
 // The low 14 bits contain the shared byte address / 16; offsets below are in that unit.

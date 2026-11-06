@@ -1,8 +1,33 @@
 #pragma once
 
-#include "ptx/ptx.cuh"
+// Tensor-memory allocation, shared-to-TMEM copies, loads/stores and waits.
+#include "ptx/common.cuh"
 
 namespace ptx {
+
+struct Allocator2Sm {
+    DEVICE void allocate(int n, uint32_t* p) {
+        asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(
+                         cast_smem_ptr_to_uint(p)),
+                     "r"(n));
+    }
+    DEVICE void free(uint32_t p, int n) {
+        asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;" ::"r"(p), "r"(n));
+    }
+    DEVICE void release_allocation_lock() {
+        asm volatile("tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;");
+    }
+};
+struct SM100_UTCCP_2x64dp128bitlw0123_2cta {
+    using SRegisters = uint64_t[1];
+    using DRegisters = uint32_t[1];
+
+    DEVICE static void copy(uint64_t const& src_addr, uint32_t const& dst_addr) {
+        asm volatile("tcgen05.cp.cta_group::2.64x128b.warpx2::01_23 [%0], %1;"
+                     :
+                     : "r"(dst_addr) "l"(src_addr));
+    }
+};
 template <int N> DEVICE void tmem_ld_32dp32bNx(uint32_t addr, void* dst);
 template <int N> DEVICE void tmem_st_32dp32bNx(uint32_t addr, const void* src);
 template <> DEVICE void tmem_ld_32dp32bNx<1>(uint32_t addr, void* dst) {
@@ -172,4 +197,28 @@ template <> DEVICE void tmem_st_32dp32bNx<128>(uint32_t addr, const void* src) {
 struct SM100_TMEM_STORE_32dp32b1x {
     DEVICE static void copy(uint32_t v, uint32_t addr) { tmem_st_32dp32bNx<1>(addr, &v); }
 };
+DEVICE void fence_view_async_tmem_load() {
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+}
+DEVICE void fence_view_async_tmem_store() {
+    asm volatile("tcgen05.wait::st.sync.aligned;" ::: "memory");
+}
+// SM103 TMEM load with a per-lane maximum reduction.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
+DEVICE void tmem_ld_32dp32b32x_max(uint32_t tmem_col, float (&p)[32], float& p_max) {
+    asm volatile("tcgen05.ld.red.sync.aligned.32x32b.x32.max.f32 "
+                 "{%0, %1, %2, %3, %4, %5, %6, %7, "
+                 "%8, %9, %10, %11, %12, %13, %14, %15, "
+                 "%16, %17, %18, %19, %20, %21, %22, %23, "
+                 "%24, %25, %26, %27, %28, %29, %30, %31}, %32, [%33];"
+                 : "=f"(p[0]), "=f"(p[1]), "=f"(p[2]), "=f"(p[3]), "=f"(p[4]), "=f"(p[5]),
+                   "=f"(p[6]), "=f"(p[7]), "=f"(p[8]), "=f"(p[9]), "=f"(p[10]), "=f"(p[11]),
+                   "=f"(p[12]), "=f"(p[13]), "=f"(p[14]), "=f"(p[15]), "=f"(p[16]), "=f"(p[17]),
+                   "=f"(p[18]), "=f"(p[19]), "=f"(p[20]), "=f"(p[21]), "=f"(p[22]), "=f"(p[23]),
+                   "=f"(p[24]), "=f"(p[25]), "=f"(p[26]), "=f"(p[27]), "=f"(p[28]), "=f"(p[29]),
+                   "=f"(p[30]), "=f"(p[31]), "=f"(p_max)
+                 : "r"(tmem_col));
+}
+#endif
+
 } // namespace ptx

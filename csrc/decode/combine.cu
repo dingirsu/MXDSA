@@ -1,4 +1,4 @@
-#include "ptx/ptx.cuh"
+#include "ptx/common.cuh"
 #include "decode/combine.h"
 
 #include <math_constants.h>
