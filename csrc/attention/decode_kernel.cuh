@@ -340,42 +340,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             ptx::tcgen05_after_thread_sync();
             ptx::tma_store_wait<0>();
             ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
-            if (warp_idx == 1 && ptx::elect_one_sync()) {
-                // Prefetch whole short rows here. For longer aligned rows the
-                // index warp owns both raw slots and streams them in chunks.
-                const int raw_extra_start = (params.topk + 3) & ~3;
-                const bool raw_staged =
-                    raw_extra_start + params.extra_topk <= SharedMemoryPlan::RAW_INDEX_CAPACITY &&
-                    (params.topk & 3) == 0 && (params.extra_topk & 3) == 0 &&
-                    (params.stride_indices_b & 3) == 0 && (params.stride_indices_s_q & 3) == 0 &&
-                    (params.stride_extra_indices_b & 3) == 0 &&
-                    (params.stride_extra_indices_s_q & 3) == 0 &&
-                    (reinterpret_cast<uintptr_t>(params.indices) & 15) == 0 &&
-                    (reinterpret_cast<uintptr_t>(params.extra_indices) & 15) == 0;
-                if (raw_staged) {
-                    int* raw_dst = smem.raw_indices[args.outer_loop_phase].data();
-                    const int* raw_main = params.indices +
-                                          params.stride_indices_b * args.batch_idx +
-                                          params.stride_indices_s_q * args.s_q_idx;
-                    const int* raw_extra = params.extra_indices +
-                                           params.stride_extra_indices_b * args.batch_idx +
-                                           params.stride_extra_indices_s_q * args.s_q_idx;
-                    smem.bar_raw_indices_full[args.outer_loop_phase].arrive_and_expect_tx(
-                        (params.topk + params.extra_topk) * 4);
-                    if (params.topk > 0)
-                        ptx::SM90_BULK_COPY_G2S::copy(
-                            raw_main,
-                            reinterpret_cast<uint64_t*>(
-                                &smem.bar_raw_indices_full[args.outer_loop_phase]),
-                            raw_dst, params.topk * 4);
-                    if (params.extra_topk > 0)
-                        ptx::SM90_BULK_COPY_G2S::copy(
-                            raw_extra,
-                            reinterpret_cast<uint64_t*>(
-                                &smem.bar_raw_indices_full[args.outer_loop_phase]),
-                            raw_dst + raw_extra_start, params.extra_topk * 4);
-                }
-            }
             if (warp_idx == 0 && ptx::elect_one_sync()) {
 
                 const int q_batch_base = args.batch_idx * (params.stride_q_b / params.stride_q_s_q);
@@ -602,8 +566,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             int tma_coords_step_per_block = params.stride_kv_block / TMA_K_STRIDE_FOR_DECODING;
             int tma_coords_step_per_extra_block =
                 params.stride_extra_kv_block / TMA_K_STRIDE_FOR_DECODING;
-            // Long rows reuse both raw-index slots as a chunk pipeline owned
-            // entirely by this warp. WG0 only touches them for short rows.
+            // This warp owns raw-index staging: whole-row copies for short
+            // rows and a two-slot chunk pipeline for long rows.
             // Keep the sequence across requests and main/extra ranges so each
             // slot's mbarrier parity follows every asynchronous transaction.
             int raw_chunk_sequence = 0;
@@ -626,6 +590,29 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     raw_extra_start + params.extra_topk <= SharedMemoryPlan::RAW_INDEX_CAPACITY;
                 const bool raw_chunked = raw_bulk_aligned && !raw_staged;
                 const int* raw_src = smem.raw_indices[args.outer_loop_phase].data();
+                if (raw_staged && ptx::elect_one_sync()) {
+                    int* raw_dst = smem.raw_indices[args.outer_loop_phase].data();
+                    const int* raw_main = params.indices +
+                                          params.stride_indices_b * args.batch_idx +
+                                          params.stride_indices_s_q * args.s_q_idx;
+                    const int* raw_extra = params.extra_indices +
+                                           params.stride_extra_indices_b * args.batch_idx +
+                                           params.stride_extra_indices_s_q * args.s_q_idx;
+                    smem.bar_raw_indices_full[args.outer_loop_phase].arrive_and_expect_tx(
+                        (params.topk + params.extra_topk) * 4);
+                    if (params.topk > 0)
+                        ptx::SM90_BULK_COPY_G2S::copy(
+                            raw_main,
+                            reinterpret_cast<uint64_t*>(
+                                &smem.bar_raw_indices_full[args.outer_loop_phase]),
+                            raw_dst, params.topk * 4);
+                    if (params.extra_topk > 0)
+                        ptx::SM90_BULK_COPY_G2S::copy(
+                            raw_extra,
+                            reinterpret_cast<uint64_t*>(
+                                &smem.bar_raw_indices_full[args.outer_loop_phase]),
+                            raw_dst + raw_extra_start, params.extra_topk * 4);
+                }
                 if (raw_staged)
                     smem.bar_raw_indices_full[args.outer_loop_phase].wait(decode_q_phase);
 
@@ -806,6 +793,11 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                min(args.num_orig_kv_blocks, args.end_block_idx), IsOrigBlock{});
                 process_blocks(max(args.start_block_idx, args.num_orig_kv_blocks),
                                args.end_block_idx, IsExtraBlock{});
+                if (raw_staged) {
+                    // Finish all readers before this warp reuses the slot.
+                    ptx::fence_view_async_shared();
+                    __syncwarp();
+                }
             });
         } else if (warp_idx == 10 || warp_idx == 11) {
             // Load the two unique UE8M0 words into registers and repeat
