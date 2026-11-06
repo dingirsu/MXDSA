@@ -9,12 +9,12 @@
 
 #include <cuda_bf16.h>
 
-static constexpr float LOG_2_E = 1.44269504f;
-
 // Instantiation for tensor.data_ptr<__nv_bfloat16>()
 template <> inline __nv_bfloat16* at::TensorBase::data_ptr<__nv_bfloat16>() const {
     return reinterpret_cast<__nv_bfloat16*>(this->data_ptr());
 }
+
+static constexpr float LOG_2_E = 1.44269504f;
 
 // A struct that holds the architecture information of the current GPU.
 struct Arch {
@@ -82,11 +82,11 @@ inline int int64_stride_to_int(int64_t orig_stride) {
 
 #define DISPATCH_MODEL_TYPE(MODEL_TYPE, CONSTEXPR_NAME, ...)                                       \
     [&]() {                                                                                        \
-        if (MODEL_TYPE == ModelType::V32) {                                                        \
-            static constexpr ModelType CONSTEXPR_NAME = ModelType::V32;                            \
+        if (MODEL_TYPE == mxdsa::ModelType::V32) {                                                        \
+            static constexpr mxdsa::ModelType CONSTEXPR_NAME = mxdsa::ModelType::V32;                            \
             return __VA_ARGS__();                                                                  \
-        } else if (MODEL_TYPE == ModelType::MODEL1) {                                              \
-            static constexpr ModelType CONSTEXPR_NAME = ModelType::MODEL1;                         \
+        } else if (MODEL_TYPE == mxdsa::ModelType::MODEL1) {                                              \
+            static constexpr mxdsa::ModelType CONSTEXPR_NAME = mxdsa::ModelType::MODEL1;                         \
             return __VA_ARGS__();                                                                  \
         } else {                                                                                   \
             TORCH_CHECK(false, "Unsupported model type: ", (int)MODEL_TYPE);                       \

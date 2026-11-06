@@ -5,6 +5,8 @@
 #include <cuda_bf16.h>
 #include <type_traits>
 
+namespace mxdsa {
+
 enum class ModelType { V32, MODEL1 };
 
 struct __align__(4 * 8) DecodingSchedMeta {
@@ -474,3 +476,5 @@ inline constexpr bool is_decode_v =
 template <SparseAttnFwdMode FWD_MODE>
 using SparseFwdArgT =
     std::conditional_t<is_decode_v<FWD_MODE>, SparseAttnDecodeParams, SparseAttnFwdParams>;
+
+} // namespace mxdsa

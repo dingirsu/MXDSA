@@ -8,7 +8,7 @@
 #include <cuda_runtime_api.h>
 #include <cuda.h>
 
-namespace ptx {
+namespace mxdsa {
 
 class KUException final : public std::exception {
     std::string message = {};
@@ -26,7 +26,7 @@ class KUException final : public std::exception {
     const char* what() const noexcept override { return message.c_str(); }
 };
 
-#define THROW_KU_EXCEPTION(name, ...) throw ptx::KUException(name, __FILE__, __LINE__, __VA_ARGS__)
+#define THROW_KU_EXCEPTION(name, ...) throw ::mxdsa::KUException(name, __FILE__, __LINE__, __VA_ARGS__)
 
 #define KU_CUDA_CHECK(call)                                                                        \
     do {                                                                                           \
@@ -127,4 +127,4 @@ static inline std::vector<uint64_t> make_stride_helper(const std::vector<T>& str
     return res;
 }
 
-} // namespace ptx
+} // namespace mxdsa

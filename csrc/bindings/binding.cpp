@@ -9,9 +9,7 @@
 #include "attention/launch.h"
 #include "bindings/dual_mxfp8_sparse_decode.h"
 
-namespace {
-
-std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
+static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     const at::Tensor& q, const at::Tensor& kv, const at::Tensor& indices, double sm_scale,
     const std::vector<uint32_t>& w1, const std::vector<uint32_t>& w2,
     const std::optional<at::Tensor>& attn_sink, const std::optional<at::Tensor>& topk_length) {
@@ -77,7 +75,7 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     at::Tensor max_logits = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
     at::Tensor lse = torch::empty({s_q, h_q}, opts.dtype(torch::kFloat));
 
-    MxFp8SparseAttnFwdParams params = {
+    mxdsa::MxFp8SparseAttnFwdParams params = {
         s_q,
         s_kv,
         h_q,
@@ -91,8 +89,8 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         kv.data_ptr(),
         nullptr, // The dual kernel reads complete K scales from the page tail.
         indices.data_ptr<int>(),
-        ptx::get_optional_tensor_ptr<float>(attn_sink),
-        ptx::get_optional_tensor_ptr<int>(topk_length),
+        get_optional_tensor_ptr<float>(attn_sink),
+        get_optional_tensor_ptr<int>(topk_length),
         int64_stride_to_int(q.stride(0)),
         int64_stride_to_int(q.stride(1)),
         int64_stride_to_int(kv.stride(0)),
@@ -111,12 +109,10 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         params.w2[i] = w2[i];
     }
 
-    sm100::dual_mxfp8::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(
+    mxdsa::attention::run_dual_mxfp8_phase1_kernel<mxdsa::SparseAttnFwdMode::Prefill, 512>(
         params);
     return {out, max_logits, lse};
 }
-
-} // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("dual_mxfp8_head64_sparse_prefill_fwd", &dual_mxfp8_head64_sparse_prefill_interface);

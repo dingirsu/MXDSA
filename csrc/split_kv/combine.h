@@ -2,8 +2,8 @@
 
 #include "common/params.h"
 
-namespace smxx::decode {
+namespace mxdsa::split_kv {
 
 template <typename ElementT> void run_flash_mla_combine_kernel(CombineParams& params);
 
-}
+} // namespace mxdsa::split_kv

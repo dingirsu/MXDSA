@@ -36,10 +36,6 @@
         print("\n");                                                                               \
     }
 
-template <typename T> __inline__ __host__ __device__ T ceil_div(const T& a, const T& b) {
-    return (a + b - 1) / b;
-}
-
 #ifndef TRAP_ONLY_DEVICE_ASSERT
 #define TRAP_ONLY_DEVICE_ASSERT(cond)                                                              \
     do {                                                                                           \
@@ -55,6 +51,8 @@ template <typename T> __inline__ __host__ __device__ T ceil_div(const T& a, cons
             asm("trap;");                                                                          \
     } while (0)
 #endif
+
+namespace mxdsa {
 
 struct RingBufferState {
     uint32_t cur_block_idx = 0u;
@@ -76,3 +74,5 @@ struct RingBufferState {
         return new_state;
     }
 };
+
+} // namespace mxdsa

@@ -6,7 +6,7 @@
 #include "ptx/memory.cuh"
 #include "ptx/mma.cuh"
 #include "ptx/tmem.cuh"
-namespace sm100 {
+namespace mxdsa::attention {
 template <int D_V, int CHUNK_SIZE, int TMEM_COL_START> DEVICE void rescale_O(float scale_factor) {
     float2 scale_factor_float2 = {scale_factor, scale_factor};
     float2 o[CHUNK_SIZE / 2];
@@ -116,4 +116,4 @@ DEVICE void issue_sv(const void* s, const void* v, uint32_t c, uint32_t sa, uint
         }
     }
 }
-} // namespace sm100
+} // namespace mxdsa::attention

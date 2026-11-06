@@ -17,7 +17,7 @@
 #include "ptx/types.cuh"
 #include "ptx/warp.cuh"
 
-namespace sm100::dual_mxfp8 {
+namespace mxdsa::attention {
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_kernel_devfunc(
@@ -115,7 +115,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             int topk_length =
                 params.topk_length != nullptr ? __ldg(params.topk_length + s_q_idx) : params.topk;
 
-            int num_k_blocks = max(ptx::ceil_div(topk_length, (int)B_TOPK), 1);
+            int num_k_blocks = max(mxdsa::ceil_div(topk_length, (int)B_TOPK), 1);
             OuterloopArgs args = {(bool)outer_loop_phase, 0, s_q_idx, 0, num_k_blocks, topk_length};
 
             loop_body(args);
@@ -146,7 +146,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             for (int i = 0; i < B_EPI / 8; ++i) {
 
                 sO_addrs[i] =
-                    sm100::k_major_ptr<64, 128>(o_storage, idx_in_warpgroup % 64,
+                    mxdsa::attention::k_major_ptr<64, 128>(o_storage, idx_in_warpgroup % 64,
                                               (idx_in_warpgroup / 64) * (O_STAGE_D / 2) + i * 8);
             }
 
@@ -353,7 +353,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
     } else if (warpgroup_idx == 1) {
         // KV fetching threads.
         ptx::warpgroup_reg_dealloc<B_TOPK == 128 ? 128 : 80>();
-        ::RingBufferState rs;
+        mxdsa::RingBufferState rs;
 
         const int warp_idx =
             ptx::canonical_warp_idx(); // Using `warp_idx` without `__shfl_sync` is faster
@@ -514,7 +514,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
     } else if (warpgroup_idx == 2) {
         ptx::warpgroup_reg_dealloc<B_TOPK == 128 ? 64 : 80>();
 
-        ::RingBufferState rs;
+        mxdsa::RingBufferState rs;
         // CTA1 issues SV independently; CTA0 issues QK.
         if (warp_idx == 8 && cta_idx == 1 && ptx::elect_one_sync()) {
             run_outer_loop([&](const OuterloopArgs& args) {
@@ -533,7 +533,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         if (k == args.start_block_idx)
                             smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                         ptx::tcgen05_after_thread_sync();
-                        sm100::issue_sv<B_TOPK, false>(
+                        mxdsa::attention::issue_sv<B_TOPK, false>(
                             smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                             tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                             tmem_cols::V_scale, k == args.start_block_idx);
@@ -545,7 +545,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                         }
                         ptx::tcgen05_after_thread_sync();
-                        sm100::issue_sv<B_TOPK, false>(
+                        mxdsa::attention::issue_sv<B_TOPK, false>(
                             smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                             tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                             tmem_cols::V_scale, k == args.start_block_idx);
@@ -586,7 +586,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     copy_k_scale_smem_to_tmem(smem.k_scale_mma[k_buf_idx].data(),
                                               tmem_cols::K_scale);
                     ptx::tcgen05_before_thread_sync();
-                    sm100::issue_qk<B_TOPK, false>(smem.Q[0].data(), smem.K[k_buf_idx].data(),
+                    mxdsa::attention::issue_qk<B_TOPK, false>(smem.Q[0].data(), smem.K[k_buf_idx].data(),
                                                  tmem_cols::P, tmem_cols::Q_scale + (0),
                                                  tmem_cols::K_scale);
                     ptx::umma_arrive_multicast_2x1SM_noelect(smem.bar_QK_done[k_buf_idx], 1 | 2);
@@ -627,7 +627,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             // groups of 32. Scale words are packed for the duplicated
             // DP layout; each UE8M0 byte serves two K=32 MMAs.
             const int scale_warp = warp_idx - 10;
-            ::RingBufferState scale_rs;
+            mxdsa::RingBufferState scale_rs;
             run_outer_loop([&](const OuterloopArgs& args) {
                 NO_UNROLL
                 for (int k = args.start_block_idx; k < args.end_block_idx; ++k) {
@@ -766,7 +766,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         int s_row = idx_in_warpgroup % (H_Q / 2);
         int s_col_base = (local_warp_idx >= 2 ? B_TOPK / 2 : 0);
 
-        ::RingBufferState rs;
+        mxdsa::RingBufferState rs;
         run_outer_loop([&](const OuterloopArgs& args) {
             float mi = MAX_INIT_VAL;
             float li = 0.0f;
@@ -912,7 +912,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
                     UNROLL
                     for (int i = 0; i < 4; ++i) {
-                        ptx::st_shared(sm100::k_major_ptr<64, 64>(smem.S[s_buf_idx].data(), s_row,
+                        ptx::st_shared(mxdsa::attention::k_major_ptr<64, 64>(smem.S[s_buf_idx].data(), s_row,
                                                                 s_col_base + i * 16),
                                        *reinterpret_cast<__int128_t*>(s + i * 16));
                     }
@@ -1012,7 +1012,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     ptx::fence_view_async_tmem_store();
                     UNROLL
                     for (int i = 0; i < NUM_ELEMS_PER_THREAD / 16; ++i) {
-                        fp8_e4m3* sS_base = sm100::k_major_ptr<64, 64>(smem.S[s_buf_idx].data(),
+                        fp8_e4m3* sS_base = mxdsa::attention::k_major_ptr<64, 64>(smem.S[s_buf_idx].data(),
                                                                      s_row, s_col_base + i * 16);
                         ptx::st_shared(sS_base, *reinterpret_cast<__int128_t*>(s + i * 16));
                     }
@@ -1112,9 +1112,9 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     KU_ASSERT(reinterpret_cast<int64_t>(params.q) % 16 == 0);
     KU_ASSERT(reinterpret_cast<int64_t>(params.kv) % 16 == 0);
 
-    CUtensorMap tensor_map_q = ptx::make_tensor_map(
+    CUtensorMap tensor_map_q = mxdsa::make_tensor_map(
         {128ul, TOKEN_H_Q, 2ul, (D_Q / 128ul) / 2ul, (unsigned long)params.s_q},
-        ptx::make_stride_helper<int>({params.stride_q_h_q, 128, D_Q / 2, params.stride_q_s_q},
+        mxdsa::make_stride_helper<int>({params.stride_q_h_q, 128, D_Q / 2, params.stride_q_s_q},
                                      sizeof(fp8_e4m3)),
         {128, TOKEN_H_Q, 2, (D_Q / 128) / 2, 1}, params.q, CU_TENSOR_MAP_DATA_TYPE_UINT8,
         CU_TENSOR_MAP_SWIZZLE_128B,
@@ -1127,7 +1127,7 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     // inside the packed page all 512-byte E4M3 rows are contiguous and
     // the replicated 16-byte scale slots form a separate tail plane.
     tensor_map_kv =
-        ptx::make_tensor_map({D_QK, (unsigned long)params.s_kv}, {(unsigned long)D_K}, {128, 1},
+        mxdsa::make_tensor_map({D_QK, (unsigned long)params.s_kv}, {(unsigned long)D_K}, {128, 1},
                              params.kv, CU_TENSOR_MAP_DATA_TYPE_UINT8, CU_TENSOR_MAP_SWIZZLE_128B,
                              CU_TENSOR_MAP_L2_PROMOTION_L2_256B);
     // The scale tail contains one replicated 16B UE8M0 slot per K token.
@@ -1136,15 +1136,15 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     if constexpr (SPLIT_O_STAGING) {
         // Pair output segments separated by D_V/2. Each store covers 64 or
         // 128 dimensions per side, according to the selected staging capacity.
-        tensor_map_o = ptx::make_tensor_map(
+        tensor_map_o = mxdsa::make_tensor_map(
             {64, TOKEN_H_Q, D_V / 128, 2ul, (unsigned long)params.s_q},
-            ptx::make_stride_helper<int>({D_V, 64, D_V / 2, TOKEN_H_Q * D_V}, sizeof(ptx::bf16)),
+            mxdsa::make_stride_helper<int>({D_V, 64, D_V / 2, TOKEN_H_Q * D_V}, sizeof(ptx::bf16)),
             {64, TOKEN_H_Q, O_STAGE_D / 128, 2, 1}, params.out, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B);
     } else {
-        tensor_map_o = ptx::make_tensor_map(
+        tensor_map_o = mxdsa::make_tensor_map(
             {64, TOKEN_H_Q, D_V / 64, (unsigned long)params.s_q, 1ul},
-            ptx::make_stride_helper<int>({D_V, 64, TOKEN_H_Q * D_V, TOKEN_H_Q * D_V},
+            mxdsa::make_stride_helper<int>({D_V, 64, TOKEN_H_Q * D_V, TOKEN_H_Q * D_V},
                                          sizeof(ptx::bf16)),
             {64, TOKEN_H_Q, D_V / 64, 1, 1}, params.out, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B);
@@ -1171,4 +1171,4 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     KU_CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, params, tma_params));
 }
 
-} // namespace sm100::dual_mxfp8
+} // namespace mxdsa::attention

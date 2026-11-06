@@ -7,7 +7,7 @@
 #include "common/utils.h"
 #include "common/host.h"
 
-namespace smxx::decode {
+namespace mxdsa::split_kv {
 
 template <typename ElementT, int HEAD_DIM_V, int BLOCK_SIZE_M, int MAX_SPLITS, int NUM_THREADS>
 __global__ void __launch_bounds__(NUM_THREADS)
@@ -63,7 +63,7 @@ __global__ void __launch_bounds__(NUM_THREADS)
 
     // Warp #i gathers LseAccum for seq #i
     {
-        constexpr int NUM_LSE_PER_THREAD = ptx::ceil_div(MAX_SPLITS, 32);
+        constexpr int NUM_LSE_PER_THREAD = mxdsa::ceil_div(MAX_SPLITS, 32);
         float local_lse[NUM_LSE_PER_THREAD];
         UNROLL
         for (int i = 0; i < NUM_LSE_PER_THREAD; ++i) {
@@ -239,7 +239,7 @@ __global__ void __launch_bounds__(NUM_THREADS)
         } else {
             // Warp #i gathers LseAccum for seq #i
             {
-                constexpr int NUM_LSE_PER_THREAD = ptx::ceil_div(MAX_SPLITS, 32);
+                constexpr int NUM_LSE_PER_THREAD = mxdsa::ceil_div(MAX_SPLITS, 32);
                 float local_lse[NUM_LSE_PER_THREAD];
                 UNROLL
                 for (int i = 0; i < NUM_LSE_PER_THREAD; ++i) {
@@ -401,7 +401,7 @@ template <typename ElementT> void run_original_flash_mla_combine_kernel(CombineP
         attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attribute[0].val.programmaticStreamSerializationAllowed = 1;
         cudaLaunchConfig_t combine_kernel_config = {
-            dim3(params.b * params.s_q, 1, ptx::ceil_div(params.h_q, BLOCK_SIZE_M)),
+            dim3(params.b * params.s_q, 1, mxdsa::ceil_div(params.h_q, BLOCK_SIZE_M)),
             dim3(NUM_THREADS, 1, 1),
             0,
             params.stream,
@@ -435,8 +435,8 @@ template <typename ElementT> void run_flash_mla_combine_kernel(CombineParams& pa
         attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attribute[0].val.programmaticStreamSerializationAllowed = 1;
         cudaLaunchConfig_t combine_kernel_config = {
-            dim3(ptx::ceil_div(params.num_sm_parts, 2) * params.s_q, 1,
-                 ptx::ceil_div(params.h_q, BLOCK_SIZE_M)),
+            dim3(mxdsa::ceil_div(params.num_sm_parts, 2) * params.s_q, 1,
+                 mxdsa::ceil_div(params.h_q, BLOCK_SIZE_M)),
             dim3(NUM_THREADS, 1, 1),
             0,
             params.stream,
@@ -453,4 +453,4 @@ template void run_flash_mla_combine_kernel<__nv_bfloat16>(CombineParams& params)
 template void run_flash_mla_combine_kernel<__half>(CombineParams& params);
 #endif
 
-} // namespace smxx::decode
+} // namespace mxdsa::split_kv

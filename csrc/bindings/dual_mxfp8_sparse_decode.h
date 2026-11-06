@@ -120,29 +120,29 @@ dual_mxfp8_sparse_attn_decode_interface(
     constexpr int block_size_topk = 64;
     if (!tile_scheduler_metadata.has_value()) {
         tile_scheduler_metadata =
-            torch::empty({num_sm_parts, static_cast<int>(sizeof(DecodingSchedMeta) / sizeof(int))},
+            torch::empty({num_sm_parts, static_cast<int>(sizeof(mxdsa::DecodingSchedMeta) / sizeof(int))},
                          opts.dtype(torch::kInt32));
         num_splits = torch::empty({b + 1}, opts.dtype(torch::kInt32));
-        GetDecodeSchedMetaParams sched = {
+        mxdsa::GetDecodeSchedMetaParams sched = {
             b,
             s_q,
             block_size_topk,
             fixed_overhead_num_blocks,
             topk,
             extra_topk,
-            ptx::get_optional_tensor_ptr<int>(topk_length),
-            ptx::get_optional_tensor_ptr<int>(extra_topk_length),
+            get_optional_tensor_ptr<int>(topk_length),
+            get_optional_tensor_ptr<int>(extra_topk_length),
             nullptr,
-            reinterpret_cast<DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
+            reinterpret_cast<mxdsa::DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
             num_splits->data_ptr<int>(),
             num_sm_parts,
             at::cuda::getCurrentCUDAStream().stream()};
-        smxx::decode::run_get_decoding_sched_meta_kernel(sched);
+        mxdsa::split_kv::run_get_decoding_sched_meta_kernel(sched);
     }
-    KU_CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts, sizeof(DecodingSchedMeta) / sizeof(int));
+    KU_CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts, sizeof(mxdsa::DecodingSchedMeta) / sizeof(int));
     KU_CHECK_SHAPE(num_splits, b + 1);
 
-    SparseAttnDualMxfp8DecodeParams params = {
+    mxdsa::SparseAttnDualMxfp8DecodeParams params = {
         b,
         s_q,
         h_q,
@@ -154,22 +154,22 @@ dual_mxfp8_sparse_attn_decode_interface(
         num_blocks,
         page_block_size,
         topk,
-        ModelType::MODEL1,
+        mxdsa::ModelType::MODEL1,
         q.data_ptr(),
         kv.data_ptr(),
         {},
         {},
         indices.data_ptr<int>(),
-        ptx::get_optional_tensor_ptr<int>(topk_length),
-        ptx::get_optional_tensor_ptr<float>(attn_sink),
+        get_optional_tensor_ptr<int>(topk_length),
+        get_optional_tensor_ptr<float>(attn_sink),
         lse.data_ptr<float>(),
         reinterpret_cast<bf16*>(out.data_ptr()),
         extra_num_blocks,
         extra_page_block_size,
         extra_topk,
         have_extra_kv ? extra_kv->data_ptr() : nullptr,
-        ptx::get_optional_tensor_ptr<int>(extra_indices),
-        ptx::get_optional_tensor_ptr<int>(extra_topk_length),
+        get_optional_tensor_ptr<int>(extra_indices),
+        get_optional_tensor_ptr<int>(extra_topk_length),
         int64_stride_to_int(q.stride(0)),
         int64_stride_to_int(q.stride(1)),
         int64_stride_to_int(q.stride(2)),
@@ -194,7 +194,7 @@ dual_mxfp8_sparse_attn_decode_interface(
         0,
         0,
         0,
-        reinterpret_cast<DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
+        reinterpret_cast<mxdsa::DecodingSchedMeta*>(tile_scheduler_metadata->data_ptr()),
         num_splits->data_ptr<int>(),
         num_sm_parts};
     for (int i = 0; i < 8; ++i) {
@@ -213,10 +213,10 @@ dual_mxfp8_sparse_attn_decode_interface(
     params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
     params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
 
-    sm100::dual_mxfp8::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV,
+    mxdsa::attention::run_dual_mxfp8_phase1_kernel<mxdsa::SparseAttnFwdMode::DecodeWithSplitKV,
                                                             512>(params);
 
-    CombineParams combine = {b,
+    mxdsa::CombineParams combine = {b,
                              s_q,
                              h_q,
                              d_v,
@@ -237,8 +237,8 @@ dual_mxfp8_sparse_attn_decode_interface(
                              params.tile_scheduler_metadata_ptr,
                              params.num_splits_ptr,
                              num_sm_parts,
-                             ptx::get_optional_tensor_ptr<float>(attn_sink),
+                             get_optional_tensor_ptr<float>(attn_sink),
                              at::cuda::getCurrentCUDAStream().stream()};
-    smxx::decode::run_flash_mla_combine_kernel<bf16>(combine);
+    mxdsa::split_kv::run_flash_mla_combine_kernel<bf16>(combine);
     return {out, lse.transpose(1, 2), tile_scheduler_metadata, num_splits};
 }

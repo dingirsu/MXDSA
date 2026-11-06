@@ -7,7 +7,7 @@
 
 #include "common/params.h"
 
-namespace sm100::dual_mxfp8 {
+namespace mxdsa::attention {
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct KernelTemplate {
 
@@ -172,4 +172,4 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     static void run(const ArgT& params) requires (IS_DECODE);
 };
 
-} // namespace sm100::dual_mxfp8
+} // namespace mxdsa::attention

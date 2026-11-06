@@ -3,7 +3,7 @@
 #include "common/params.h"
 #include <type_traits>
 
-namespace sm100::dual_mxfp8 {
+namespace mxdsa::attention {
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK> struct KernelTemplate;
 
@@ -28,4 +28,4 @@ extern template void run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 51
 extern template void run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV, 512>(
     const SparseAttnDualMxfp8DecodeParams&);
 
-} // namespace sm100::dual_mxfp8
+} // namespace mxdsa::attention
