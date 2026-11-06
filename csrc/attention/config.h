@@ -1,9 +1,7 @@
 #pragma once
-#include "attention/launch.h"
 #include "ptx/barrier.cuh"
 #include "ptx/clc.cuh"
 #include "ptx/types.cuh"
-#include "attention/layout.cuh"
 
 #include <math_constants.h>
 

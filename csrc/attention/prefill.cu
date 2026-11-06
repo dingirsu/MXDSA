@@ -1,3 +1,4 @@
+#include "attention/launch.h"
 #include "attention/prefill_kernel.cuh"
 namespace sm100::dual_mxfp8 {
 template void

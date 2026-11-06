@@ -1,10 +1,25 @@
 #pragma once
 
-#include "attention/kernel_common.cuh"
+#include <math_constants.h>
+
+#include "attention/common.cuh"
+#include "attention/config.h"
+#include "common/host.h"
+#include "common/params.h"
+#include "common/utils.h"
+#include "ptx/barrier.cuh"
+#include "ptx/clc.cuh"
+#include "ptx/math.cuh"
+#include "ptx/memory.cuh"
+#include "ptx/mma.cuh"
+#include "ptx/tma.cuh"
+#include "ptx/tmem.cuh"
+#include "ptx/types.cuh"
+#include "ptx/warp.cuh"
 
 namespace sm100::dual_mxfp8 {
 
-template <FwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
+template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_kernel_devfunc(
     const ArgT& params, const TmaParams& tma_params)
     requires(IS_DECODE)
@@ -167,7 +182,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             for (int i = 0; i < B_EPI / 8; ++i) {
 
                 sO_addrs[i] =
-                    ptx::k_major_ptr<64, 128>(o_storage, idx_in_warpgroup % 64,
+                    sm100::k_major_ptr<64, 128>(o_storage, idx_in_warpgroup % 64,
                                               (idx_in_warpgroup / 64) * (O_STAGE_D / 2) + i * 8);
             }
 
@@ -175,7 +190,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             UNROLL
             for (int i = 0; i < B_EPI_SPLITKV / 4; ++i) {
                 sO_accum_addrs[i] =
-                    ptx::k_major_ptr<64, 128>((float*)o_storage, idx_in_warpgroup % 64, i * 4) +
+                    sm100::k_major_ptr<64, 128>((float*)o_storage, idx_in_warpgroup % 64, i * 4) +
                     (idx_in_warpgroup >= 64 ? (H_Q / 2) * B_EPI_SPLITKV : 0);
             }
 
@@ -523,7 +538,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                     }
                     ptx::tcgen05_after_thread_sync();
-                    ptx::issue_sv<B_TOPK, true>(
+                    sm100::issue_sv<B_TOPK, true>(
                         smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                         tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                         tmem_cols::V_scale, k == args.start_block_idx);
@@ -561,7 +576,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     copy_k_scale_smem_to_tmem(smem.k_scale_mma[k_buf_idx].data(),
                                               tmem_cols::K_scale);
                     ptx::tcgen05_before_thread_sync();
-                    ptx::issue_qk<B_TOPK, true>(smem.Q[args.outer_loop_phase].data(),
+                    sm100::issue_qk<B_TOPK, true>(smem.Q[args.outer_loop_phase].data(),
                                                 smem.K[k_buf_idx].data(), tmem_cols::P,
                                                 tmem_cols::Q_scale + args.outer_loop_phase * 8,
                                                 tmem_cols::K_scale);
@@ -909,7 +924,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 ptx::fence_view_async_tmem_store();
                 UNROLL
                 for (int i = 0; i < NUM_ELEMS_PER_THREAD / 16; ++i) {
-                    fp8_e4m3* sS_base = ptx::k_major_ptr<64, 0>(smem.S[s_buf_idx].data(), s_row,
+                    fp8_e4m3* sS_base = sm100::k_major_ptr<64, 0>(smem.S[s_buf_idx].data(), s_row,
                                                                 s_col_base + i * 16);
                     ptx::st_shared(sS_base, *reinterpret_cast<__int128_t*>(s + i * 16));
                 }
@@ -964,7 +979,7 @@ static __global__ void __launch_bounds__(Kernel::NUM_THREADS, 1, 2)
     Kernel::sparse_attn_fwd_kernel_devfunc(params, tma_params);
 }
 
-template <FwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
+template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     requires(IS_DECODE)
 {
