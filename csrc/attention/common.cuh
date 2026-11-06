@@ -7,22 +7,25 @@
 #include "ptx/mma.cuh"
 #include "ptx/tmem.cuh"
 namespace mxdsa::attention {
+
+// Shared-memory descriptor base bits, before adding the shared-memory address.
+inline constexpr uint64_t K_SCALE_SMEM_DESC_BASE = 0x0000400800000000ull;
+inline constexpr uint64_t QK_SMEM_DESC_BASE = 0x4000404000010000ull;
+inline constexpr uint64_t DECODE_S_SMEM_DESC_BASE = 0x0000400800400000ull;
+inline constexpr uint64_t PREFILL_S_SMEM_DESC_BASE = 0x8000402000010000ull;
+inline constexpr uint64_t V_SMEM_DESC_BASE = 0x4000404000000000ull;
+
 template <int D_V, int CHUNK_SIZE, int TMEM_COL_START> DEVICE void rescale_O(float scale_factor) {
     float2 scale_factor_float2 = {scale_factor, scale_factor};
     float2 o[CHUNK_SIZE / 2];
 
     UNROLL
     for (int chunk_idx = 0; chunk_idx < (D_V / 2) / CHUNK_SIZE; ++chunk_idx) {
-        // Load O
         ptx::tmem_ld_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
         ptx::fence_view_async_tmem_load();
-
-        // Mult
         for (int i = 0; i < CHUNK_SIZE / 2; ++i) {
             o[i] = ptx::float2_mul(o[i], scale_factor_float2);
         }
-
-        // Store O
         ptx::tmem_st_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
         ptx::fence_view_async_tmem_store();
     }
@@ -37,12 +40,11 @@ template <int NUM_ELEMS_PER_THREAD> DEVICE float get_max(float p[NUM_ELEMS_PER_T
     return local_max;
 }
 
-
 DEVICE
 char load_indices_and_generate_mask(int lane_idx, int* gIndices, int s_kv, int abs_pos_start,
                                     int topk_length) {
     int indices[8];
-    KU_LDG_256(gIndices + lane_idx * 8, indices, ".nc", "no_allocate", "evict_normal", "256B");
+    LDG_256(gIndices + lane_idx * 8, indices, ".nc", "no_allocate", "evict_normal", "256B");
     auto is_valid = [&](int rel_pos_in_lane, int index) -> char {
         int abs_pos = abs_pos_start + lane_idx * 8 + rel_pos_in_lane;
         return index >= 0 && index < s_kv && abs_pos < topk_length;
@@ -55,15 +57,12 @@ char load_indices_and_generate_mask(int lane_idx, int* gIndices, int s_kv, int a
 }
 
 DEVICE void copy_k_scale_smem_to_tmem(void* ptr, uint32_t col) {
-    uint64_t desc = 0x0000400800000000ull | (ptx::cast_smem_ptr_to_uint(ptr) >> 4);
+    uint64_t desc = K_SCALE_SMEM_DESC_BASE | (ptx::cast_smem_ptr_to_uint(ptr) >> 4);
     ptx::SM100_UTCCP_2x64dp128bitlw0123_2cta::copy(desc, col);
 }
 
 DEVICE void store_s_scale_to_tmem(uint32_t tmem_col, int warp_in_warpgroup, uint8_t scale0_bits,
                                   uint8_t scale1_bits) {
-    // S is quantized independently for each softmax row.  The O MMA consumes
-    // four K=32 SFA bytes from one 32-bit TMEM word, so repeat this row's
-    // UE8M0 factor across the word and keep the duplicated 2x2 DP layout.
     const uint32_t packed_scale = uint32_t(scale0_bits) | (uint32_t(scale1_bits) << 8) |
                                   (uint32_t(scale0_bits) << 16) | (uint32_t(scale1_bits) << 24);
     const uint32_t warp_dp_addr = tmem_col + warp_in_warpgroup * 32 * 65536;
@@ -83,27 +82,27 @@ template <int MN, int SW, class T> DEVICE T* k_major_ptr(T* base, int row, int c
         b ^= (b >> 3) & (SW - 16);
     return reinterpret_cast<T*>(b);
 }
-// Descriptor constants and fragment strides are checked by tests/layout_probe.cu.
-// The low 14 bits contain the shared byte address / 16; offsets below are in that unit.
+
 template <int N, bool Decode>
 DEVICE void issue_qk(const void* q, const void* k, uint32_t c, uint32_t sa, uint32_t sb) {
-    uint64_t a = 0x4000404000010000ull | ((ptx::cast_smem_ptr_to_uint(q) >> 4) & 0x3fff);
-    uint64_t b = 0x4000404000010000ull | ((ptx::cast_smem_ptr_to_uint(k) >> 4) & 0x3fff);
+    uint64_t a = QK_SMEM_DESC_BASE | ((ptx::cast_smem_ptr_to_uint(q) >> 4) & 0x3fff);
+    uint64_t b = QK_SMEM_DESC_BASE | ((ptx::cast_smem_ptr_to_uint(k) >> 4) & 0x3fff);
     UNROLL
     for (int kk = 0; kk < 16; kk++) {
         uint32_t idesc =
             (8u << 24) | (1u << 23) | ((N / 8) << 17) | ((kk & 3u) << 29) | (((kk / 2) & 3u) << 4);
         ptx::mma_mxfp8(a + (kk % 2) * 4 + ((kk / 2) % 4) * 512 + (kk / 8) * 2,
-                  b + (kk % 4) * 2 + (kk / 4) * (N * 4), c + (Decode && kk >= 8 ? N / 2 : 0), idesc,
-                  sa + 2 * (kk / 4), sb + 2 * (kk / 8), !(kk == 0 || (Decode && kk == 8)));
+                       b + (kk % 4) * 2 + (kk / 4) * (N * 4), c + (Decode && kk >= 8 ? N / 2 : 0),
+                       idesc, sa + 2 * (kk / 4), sb + 2 * (kk / 8),
+                       !(kk == 0 || (Decode && kk == 8)));
     }
 }
 template <int N, bool Decode>
 DEVICE void issue_sv(const void* s, const void* v, uint32_t c, uint32_t sa, uint32_t sb,
                      bool clear) {
-    uint64_t a = (Decode ? 0x0000400800400000ull : 0x8000402000010000ull) |
+    uint64_t a = (Decode ? DECODE_S_SMEM_DESC_BASE : PREFILL_S_SMEM_DESC_BASE) |
                  ((ptx::cast_smem_ptr_to_uint(s) >> 4) & 0x3fff);
-    uint64_t b = 0x4000404000000000ull | ((ptx::cast_smem_ptr_to_uint(v) >> 4) & 0x3fff);
+    uint64_t b = V_SMEM_DESC_BASE | ((ptx::cast_smem_ptr_to_uint(v) >> 4) & 0x3fff);
     UNROLL
     for (int kk = 0; kk < N / 32; kk++) {
         UNROLL
@@ -111,8 +110,8 @@ DEVICE void issue_sv(const void* s, const void* v, uint32_t c, uint32_t sa, uint
             uint32_t idesc = (8u << 24) | (1u << 23) | (32u << 17) | (1u << 16) |
                              ((kk & 3u) << 29) | ((kk & 3u) << 4);
             ptx::mma_mxfp8(a + (Decode ? kk * 128 : (kk % 2) * 2 + (kk / 2) * 256),
-                      b + kk * 256 + n * N * 8, c + n * 128, idesc, sa, sb + n * 4,
-                      !(clear && kk == 0));
+                           b + kk * 256 + n * N * 8, c + n * 128, idesc, sa, sb + n * 4,
+                           !(clear && kk == 0));
         }
     }
 }

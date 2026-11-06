@@ -18,11 +18,11 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     Arch arch;
     TORCH_CHECK(arch.is_sm100f(), "Dual MXFP8 head64 sparse prefill requires SM100f.");
 
-    KU_CHECK_NDIM(q, 3);
-    KU_CHECK_NDIM(kv, 3);
-    KU_CHECK_NDIM(indices, 3);
-    KU_CHECK_NDIM(attn_sink, 1);
-    KU_CHECK_NDIM(topk_length, 1);
+    CHECK_NDIM(q, 3);
+    CHECK_NDIM(kv, 3);
+    CHECK_NDIM(indices, 3);
+    CHECK_NDIM(attn_sink, 1);
+    CHECK_NDIM(topk_length, 1);
 
     const int s_q = static_cast<int>(q.size(0));
     const int s_kv = static_cast<int>(kv.size(0));
@@ -48,26 +48,26 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
     TORCH_CHECK(w1.size() == 8 && w2.size() == 8,
                 "w1 and w2 must each contain 8 pre-expanded TMEM scale words");
 
-    KU_CHECK_DEVICE(q);
-    KU_CHECK_DEVICE(kv);
-    KU_CHECK_DEVICE(indices);
-    KU_CHECK_DEVICE(attn_sink);
-    KU_CHECK_DEVICE(topk_length);
-    KU_CHECK_DTYPE(q, torch::kUInt8);
-    KU_CHECK_DTYPE(kv, torch::kUInt8);
-    KU_CHECK_DTYPE(indices, torch::kInt32);
-    KU_CHECK_DTYPE(attn_sink, torch::kFloat32);
-    KU_CHECK_DTYPE(topk_length, torch::kInt32);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(q);
-    KU_CHECK_CONTIGUOUS(kv);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(indices);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(attn_sink);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(topk_length);
-    KU_CHECK_SHAPE(q, s_q, h_q, q_bytes_per_head);
-    KU_CHECK_SHAPE(kv, s_kv, h_kv, kv_bytes_per_token);
-    KU_CHECK_SHAPE(indices, num_q_pairs, h_kv, topk);
-    KU_CHECK_SHAPE(attn_sink, h_q);
-    KU_CHECK_SHAPE(topk_length, num_q_pairs);
+    CHECK_DEVICE(q);
+    CHECK_DEVICE(kv);
+    CHECK_DEVICE(indices);
+    CHECK_DEVICE(attn_sink);
+    CHECK_DEVICE(topk_length);
+    CHECK_DTYPE(q, torch::kUInt8);
+    CHECK_DTYPE(kv, torch::kUInt8);
+    CHECK_DTYPE(indices, torch::kInt32);
+    CHECK_DTYPE(attn_sink, torch::kFloat32);
+    CHECK_DTYPE(topk_length, torch::kInt32);
+    CHECK_LAST_DIM_CONTIGUOUS(q);
+    CHECK_CONTIGUOUS(kv);
+    CHECK_LAST_DIM_CONTIGUOUS(indices);
+    CHECK_LAST_DIM_CONTIGUOUS(attn_sink);
+    CHECK_LAST_DIM_CONTIGUOUS(topk_length);
+    CHECK_SHAPE(q, s_q, h_q, q_bytes_per_head);
+    CHECK_SHAPE(kv, s_kv, h_kv, kv_bytes_per_token);
+    CHECK_SHAPE(indices, num_q_pairs, h_kv, topk);
+    CHECK_SHAPE(attn_sink, h_q);
+    CHECK_SHAPE(topk_length, num_q_pairs);
 
     at::cuda::CUDAGuard device_guard{static_cast<char>(q.get_device())};
     const auto opts = q.options();
@@ -109,8 +109,7 @@ static std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         params.w2[i] = w2[i];
     }
 
-    mxdsa::attention::run_dual_mxfp8_phase1_kernel<mxdsa::SparseAttnFwdMode::Prefill, 512>(
-        params);
+    mxdsa::attention::run_dual_mxfp8_phase1_kernel<mxdsa::SparseAttnFwdMode::Prefill, 512>(params);
     return {out, max_logits, lse};
 }
 

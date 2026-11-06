@@ -8,7 +8,7 @@
 
 template <typename T>
 static inline bool check_optional_tensor(const T& tensor_or_opt,
-                                          const std::function<bool(const at::Tensor&)>& check_fn) {
+                                         const std::function<bool(const at::Tensor&)>& check_fn) {
     if constexpr (std::is_same<T, at::Tensor>::value) {
         return check_fn(tensor_or_opt);
     } else {
@@ -41,40 +41,34 @@ static inline PtrT* get_optional_tensor_ptr(const T& tensor_or_opt) {
     }
 }
 
-#define KU_CHECK_DEVICE(tensor)                                                                    \
+#define CHECK_DEVICE(tensor)                                                                       \
+    TORCH_CHECK(check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_cuda(); }),    \
+                #tensor " must be on CUDA")
+
+#define CHECK_NDIM(tensor, ndim)                                                                   \
     TORCH_CHECK(                                                                                   \
-        check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_cuda(); }),      \
-        #tensor " must be on CUDA")
+        check_optional_tensor(tensor, [&](const at::Tensor& t) { return t.dim() == (ndim); }),     \
+        #tensor " must have " #ndim " dimensions")
 
-
-#define KU_CHECK_NDIM(tensor, ndim)                                                                \
-    TORCH_CHECK(check_optional_tensor(                                                       \
-                    tensor, [&](const at::Tensor& t) { return t.dim() == (ndim); }),               \
-                #tensor " must have " #ndim " dimensions")
-
-
-#define KU_CHECK_SHAPE(tensor, ...)                                                                \
-    TORCH_CHECK(check_optional_tensor(tensor,                                                \
-                                            [&](const at::Tensor& t) {                             \
-                                                return t.sizes() ==                                \
-                                                       torch::IntArrayRef({__VA_ARGS__});          \
-                                            }),                                                    \
+#define CHECK_SHAPE(tensor, ...)                                                                   \
+    TORCH_CHECK(check_optional_tensor(tensor,                                                      \
+                                      [&](const at::Tensor& t) {                                   \
+                                          return t.sizes() == torch::IntArrayRef({__VA_ARGS__});   \
+                                      }),                                                          \
                 #tensor " must have shape (" #__VA_ARGS__ ")")
 
-
-#define KU_CHECK_CONTIGUOUS(tensor)                                                                \
-    TORCH_CHECK(check_optional_tensor(                                                       \
-                    tensor, [](const at::Tensor& t) { return t.is_contiguous(); }),                \
-                #tensor " must be contiguous")
-
-#define KU_CHECK_LAST_DIM_CONTIGUOUS(tensor)                                                       \
+#define CHECK_CONTIGUOUS(tensor)                                                                   \
     TORCH_CHECK(                                                                                   \
-        check_optional_tensor(                                                               \
+        check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_contiguous(); }),      \
+        #tensor " must be contiguous")
+
+#define CHECK_LAST_DIM_CONTIGUOUS(tensor)                                                          \
+    TORCH_CHECK(                                                                                   \
+        check_optional_tensor(                                                                     \
             tensor, [](const at::Tensor& t) { return t.size(-1) == 1 || t.stride(-1) == 1; }),     \
         #tensor " must have contiguous last dimension")
 
-
-#define KU_CHECK_DTYPE(tensor, target_dtype)                                                       \
-    TORCH_CHECK(check_optional_tensor(                                                       \
+#define CHECK_DTYPE(tensor, target_dtype)                                                          \
+    TORCH_CHECK(check_optional_tensor(                                                             \
                     tensor, [](const at::Tensor& t) { return t.dtype() == (target_dtype); }),      \
                 #tensor " must have dtype " #target_dtype)

@@ -114,8 +114,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         int iteration = 0;
         int s_q_idx = blockIdx.x / 2; // adjacent-token pair index
         DecodingSchedMeta sched_meta;
-        KU_LDG_256(params.tile_scheduler_metadata_ptr + blockIdx.y, &sched_meta, ".nc",
-                   "no_allocate", "evict_normal", "256B");
+        LDG_256(params.tile_scheduler_metadata_ptr + blockIdx.y, &sched_meta, ".nc", "no_allocate",
+                "evict_normal", "256B");
         if (sched_meta.begin_req_idx >= params.b) {
             return 0;
         }
@@ -181,17 +181,17 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             UNROLL
             for (int i = 0; i < B_EPI / 8; ++i) {
 
-                sO_addrs[i] =
-                    mxdsa::attention::k_major_ptr<64, 128>(o_storage, idx_in_warpgroup % 64,
-                                              (idx_in_warpgroup / 64) * (O_STAGE_D / 2) + i * 8);
+                sO_addrs[i] = mxdsa::attention::k_major_ptr<64, 128>(
+                    o_storage, idx_in_warpgroup % 64,
+                    (idx_in_warpgroup / 64) * (O_STAGE_D / 2) + i * 8);
             }
 
             float* sO_accum_addrs[B_EPI_SPLITKV / 4];
             UNROLL
             for (int i = 0; i < B_EPI_SPLITKV / 4; ++i) {
-                sO_accum_addrs[i] =
-                    mxdsa::attention::k_major_ptr<64, 128>((float*)o_storage, idx_in_warpgroup % 64, i * 4) +
-                    (idx_in_warpgroup >= 64 ? (H_Q / 2) * B_EPI_SPLITKV : 0);
+                sO_accum_addrs[i] = mxdsa::attention::k_major_ptr<64, 128>(
+                                        (float*)o_storage, idx_in_warpgroup % 64, i * 4) +
+                                    (idx_in_warpgroup >= 64 ? (H_Q / 2) * B_EPI_SPLITKV : 0);
             }
 
             smem.bar_li_full.wait(args.outer_loop_phase);
@@ -396,10 +396,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                               q_batch_offset +
                                               q_load_token_idx * params.stride_q_s_q + D_Q;
                 uint4 packed_scale_lo, packed_scale_hi;
-                KU_LDG_128(q_scale_base + head_idx * params.stride_q_h_q, &packed_scale_lo, ".nc",
-                           "evict_first", "128B");
-                KU_LDG_128(q_scale_base + (head_idx + 32) * params.stride_q_h_q, &packed_scale_hi,
-                           ".nc", "evict_first", "128B");
+                LDG_128(q_scale_base + head_idx * params.stride_q_h_q, &packed_scale_lo, ".nc",
+                        "evict_first", "128B");
+                LDG_128(q_scale_base + (head_idx + 32) * params.stride_q_h_q, &packed_scale_hi,
+                        ".nc", "evict_first", "128B");
                 uint32_t q_scale_words[8] = {
                     packed_scale_lo.x, packed_scale_hi.x, packed_scale_lo.x, packed_scale_hi.x,
                     packed_scale_lo.y, packed_scale_hi.y, packed_scale_lo.y, packed_scale_hi.y};
@@ -576,10 +576,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     copy_k_scale_smem_to_tmem(smem.k_scale_mma[k_buf_idx].data(),
                                               tmem_cols::K_scale);
                     ptx::tcgen05_before_thread_sync();
-                    mxdsa::attention::issue_qk<B_TOPK, true>(smem.Q[args.outer_loop_phase].data(),
-                                                smem.K[k_buf_idx].data(), tmem_cols::P,
-                                                tmem_cols::Q_scale + args.outer_loop_phase * 8,
-                                                tmem_cols::K_scale);
+                    mxdsa::attention::issue_qk<B_TOPK, true>(
+                        smem.Q[args.outer_loop_phase].data(), smem.K[k_buf_idx].data(),
+                        tmem_cols::P, tmem_cols::Q_scale + args.outer_loop_phase * 8,
+                        tmem_cols::K_scale);
                     ptx::umma_arrive_multicast_2x1SM_noelect(smem.bar_QK_done[k_buf_idx], 1 | 2);
                 };
 
@@ -924,8 +924,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 ptx::fence_view_async_tmem_store();
                 UNROLL
                 for (int i = 0; i < NUM_ELEMS_PER_THREAD / 16; ++i) {
-                    fp8_e4m3* sS_base = mxdsa::attention::k_major_ptr<64, 0>(smem.S[s_buf_idx].data(), s_row,
-                                                                s_col_base + i * 16);
+                    fp8_e4m3* sS_base = mxdsa::attention::k_major_ptr<64, 0>(
+                        smem.S[s_buf_idx].data(), s_row, s_col_base + i * 16);
                     ptx::st_shared(sS_base, *reinterpret_cast<__int128_t*>(s + i * 16));
                 }
 
@@ -985,36 +985,36 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
 {
     static_assert(D_QK == 512);
 
-    KU_ASSERT(params.h_kv == 1);
-    KU_ASSERT(params.topk % 64 == 0);
-    KU_ASSERT(params.h_q == TOKEN_H_Q);
-    KU_ASSERT(params.s_q > 0);
+    ASSERT(params.h_kv == 1);
+    ASSERT(params.topk % 64 == 0);
+    ASSERT(params.h_q == TOKEN_H_Q);
+    ASSERT(params.s_q > 0);
 
-    KU_ASSERT(params.d_qk == D_QK);
+    ASSERT(params.d_qk == D_QK);
 
     static_assert(D_Q == 512);
-    KU_ASSERT(params.stride_q_h_q == Q_BYTES_PER_HEAD,
-              "Q head stride must be 512 e4m3 bytes + an aligned 16-byte scale slot");
-    KU_ASSERT(params.stride_kv_row == KV_BYTES_PER_TOKEN,
-              "decode KV row stride must include the 16-byte replicated scale slot");
+    ASSERT(params.stride_q_h_q == Q_BYTES_PER_HEAD,
+           "Q head stride must be 512 e4m3 bytes + an aligned 16-byte scale slot");
+    ASSERT(params.stride_kv_row == KV_BYTES_PER_TOKEN,
+           "decode KV row stride must include the 16-byte replicated scale slot");
     if (params.extra_topk > 0) {
-        KU_ASSERT(params.stride_extra_kv_row == KV_BYTES_PER_TOKEN,
-                  "decode extra KV row stride must include the 16-byte replicated scale slot");
-        KU_ASSERT(params.stride_extra_kv_block % TMA_K_STRIDE_FOR_DECODING == 0,
-                  "decode extra KV page stride must be a multiple of the 512B TMA stride");
+        ASSERT(params.stride_extra_kv_row == KV_BYTES_PER_TOKEN,
+               "decode extra KV row stride must include the 16-byte replicated scale slot");
+        ASSERT(params.stride_extra_kv_block % TMA_K_STRIDE_FOR_DECODING == 0,
+               "decode extra KV page stride must be a multiple of the 512B TMA stride");
     }
-    KU_ASSERT(reinterpret_cast<int64_t>(params.q) % 16 == 0);
-    KU_ASSERT(reinterpret_cast<int64_t>(params.kv) % 16 == 0);
+    ASSERT(reinterpret_cast<int64_t>(params.q) % 16 == 0);
+    ASSERT(reinterpret_cast<int64_t>(params.kv) % 16 == 0);
 
     CUtensorMap tensor_map_q;
-    KU_ASSERT(
+    ASSERT(
         params.stride_q_b % params.stride_q_s_q == 0,
         "In decode mode for MODEL1 sparse fp8 decoding on sm100f, q.stride(0) (on the batch dimension) must be divisible by q.stride(1) (on the sequence dimension).");
     tensor_map_q = mxdsa::make_tensor_map(
         {128ul, TOKEN_H_Q, 2ul, (D_Q / 128ul) / 2ul,
          (unsigned long)params.b * (params.stride_q_b / params.stride_q_s_q)},
         mxdsa::make_stride_helper<int>({params.stride_q_h_q, 128, D_Q / 2, params.stride_q_s_q},
-                                     sizeof(fp8_e4m3)),
+                                       sizeof(fp8_e4m3)),
         {128, TOKEN_H_Q, 2, (D_Q / 128) / 2, 1}, params.q, CU_TENSOR_MAP_DATA_TYPE_UINT8,
         CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B);
 
@@ -1022,13 +1022,13 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     CUtensorMap tensor_map_extra_kv = {};
     auto get_kv_tensormap = [&](bool is_extra, void* k_ptr, int num_blocks, int64_t stride_kv_block,
                                 int64_t stride_kv_row) -> CUtensorMap {
-        KU_ASSERT(
+        ASSERT(
             (int64_t)k_ptr % 16 == 0,
             "The base address of %sk_ptr (%p) must be 16B aligned for sparse fp8 attention on sm100f",
             is_extra ? "extra_" : "", k_ptr);
-        KU_ASSERT(stride_kv_block % TMA_K_STRIDE_FOR_DECODING == 0,
-                  "%sk_cache.stride(0) (%ld) must be a multiple of %d. Padding might be necessary",
-                  is_extra ? "extra_" : "", stride_kv_block, TMA_K_STRIDE_FOR_DECODING);
+        ASSERT(stride_kv_block % TMA_K_STRIDE_FOR_DECODING == 0,
+               "%sk_cache.stride(0) (%ld) must be a multiple of %d. Padding might be necessary",
+               is_extra ? "extra_" : "", stride_kv_block, TMA_K_STRIDE_FOR_DECODING);
         CUtensorMap tensor_map_kv = mxdsa::make_tensor_map(
             {D_K, (uint64_t)num_blocks * (stride_kv_block / TMA_K_STRIDE_FOR_DECODING)},
             {TMA_K_STRIDE_FOR_DECODING}, {128, 1}, k_ptr,
@@ -1047,7 +1047,7 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     CUtensorMap tensor_map_o = mxdsa::make_tensor_map(
         {64, TOKEN_H_Q, D_V / 128, 2ul, (unsigned long)params.b * params.s_q},
         mxdsa::make_stride_helper<int>({params.stride_o_h_q, 64, D_V / 2, params.stride_o_s_q},
-                                     sizeof(ptx::bf16)),
+                                       sizeof(ptx::bf16)),
         {64, TOKEN_H_Q, O_STAGE_D / 128, 2, 1}, params.out, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
         CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B);
 
@@ -1066,7 +1066,7 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     auto kernel =
         &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>>;
     constexpr size_t smem_size = sizeof(SharedMemoryPlan);
-    KU_CUDA_CHECK(
+    CUDA_CHECK(
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     dim3 grid_shape = dim3(2 * mxdsa::ceil_div(params.s_q, 2), params.num_sm_parts, 1);
@@ -1076,7 +1076,7 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     attr.val.clusterDim = {2, 1, 1};
     cudaLaunchConfig_t config{grid_shape, dim3(NUM_THREADS, 1, 1), smem_size, params.stream, &attr,
                               1};
-    KU_CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, params, tma_params));
+    CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, params, tma_params));
 }
 
 } // namespace mxdsa::attention

@@ -27,9 +27,9 @@ dual_mxfp8_sparse_attn_decode_interface(
 
     Arch arch = Arch();
     TORCH_CHECK(arch.is_sm100f(), "Dual MXFP8 head64 decode requires SM100f.");
-    KU_CHECK_NDIM(q, 4);
-    KU_CHECK_NDIM(kv, 4);
-    KU_CHECK_NDIM(indices, 3);
+    CHECK_NDIM(q, 4);
+    CHECK_NDIM(kv, 4);
+    CHECK_NDIM(indices, 3);
 
     const int b = static_cast<int>(q.size(0));
     const int s_q = static_cast<int>(q.size(1));
@@ -58,16 +58,16 @@ dual_mxfp8_sparse_attn_decode_interface(
                     (!extra_indices.has_value() && !extra_topk_length.has_value()),
                 "extra indices require extra_kv");
 
-    KU_CHECK_DEVICE(q);
-    KU_CHECK_DEVICE(kv);
-    KU_CHECK_DEVICE(indices);
-    KU_CHECK_DEVICE(topk_length);
-    KU_CHECK_DEVICE(attn_sink);
-    KU_CHECK_DEVICE(tile_scheduler_metadata);
-    KU_CHECK_DEVICE(num_splits);
-    KU_CHECK_DEVICE(extra_kv);
-    KU_CHECK_DEVICE(extra_indices);
-    KU_CHECK_DEVICE(extra_topk_length);
+    CHECK_DEVICE(q);
+    CHECK_DEVICE(kv);
+    CHECK_DEVICE(indices);
+    CHECK_DEVICE(topk_length);
+    CHECK_DEVICE(attn_sink);
+    CHECK_DEVICE(tile_scheduler_metadata);
+    CHECK_DEVICE(num_splits);
+    CHECK_DEVICE(extra_kv);
+    CHECK_DEVICE(extra_indices);
+    CHECK_DEVICE(extra_topk_length);
     TORCH_CHECK(q.dtype() == torch::kUInt8 || q.dtype() == torch::kFloat8_e4m3fn,
                 "q must have E4M3 storage (uint8 or float8_e4m3fn)");
     TORCH_CHECK(kv.dtype() == torch::kUInt8 || kv.dtype() == torch::kFloat8_e4m3fn,
@@ -77,30 +77,30 @@ dual_mxfp8_sparse_attn_decode_interface(
                         extra_kv->dtype() == torch::kFloat8_e4m3fn,
                     "extra_kv must have E4M3 storage");
     }
-    KU_CHECK_DTYPE(indices, torch::kInt32);
-    KU_CHECK_DTYPE(topk_length, torch::kInt32);
-    KU_CHECK_DTYPE(attn_sink, torch::kFloat32);
-    KU_CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
-    KU_CHECK_DTYPE(num_splits, torch::kInt32);
-    KU_CHECK_DTYPE(extra_indices, torch::kInt32);
-    KU_CHECK_DTYPE(extra_topk_length, torch::kInt32);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(q);
-    KU_CHECK_CONTIGUOUS(kv);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(indices);
-    KU_CHECK_CONTIGUOUS(topk_length);
-    KU_CHECK_CONTIGUOUS(attn_sink);
-    KU_CHECK_CONTIGUOUS(tile_scheduler_metadata);
-    KU_CHECK_CONTIGUOUS(num_splits);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(extra_kv);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(extra_indices);
-    KU_CHECK_CONTIGUOUS(extra_topk_length);
-    KU_CHECK_SHAPE(q, b, s_q, h_q, q_bytes);
-    KU_CHECK_SHAPE(kv, num_blocks, page_block_size, h_kv, kv_bytes);
-    KU_CHECK_SHAPE(indices, b, s_q, topk);
-    KU_CHECK_SHAPE(topk_length, b);
-    KU_CHECK_SHAPE(attn_sink, h_q);
-    KU_CHECK_SHAPE(extra_indices, b, s_q, extra_topk);
-    KU_CHECK_SHAPE(extra_topk_length, b);
+    CHECK_DTYPE(indices, torch::kInt32);
+    CHECK_DTYPE(topk_length, torch::kInt32);
+    CHECK_DTYPE(attn_sink, torch::kFloat32);
+    CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
+    CHECK_DTYPE(num_splits, torch::kInt32);
+    CHECK_DTYPE(extra_indices, torch::kInt32);
+    CHECK_DTYPE(extra_topk_length, torch::kInt32);
+    CHECK_LAST_DIM_CONTIGUOUS(q);
+    CHECK_CONTIGUOUS(kv);
+    CHECK_LAST_DIM_CONTIGUOUS(indices);
+    CHECK_CONTIGUOUS(topk_length);
+    CHECK_CONTIGUOUS(attn_sink);
+    CHECK_CONTIGUOUS(tile_scheduler_metadata);
+    CHECK_CONTIGUOUS(num_splits);
+    CHECK_LAST_DIM_CONTIGUOUS(extra_kv);
+    CHECK_LAST_DIM_CONTIGUOUS(extra_indices);
+    CHECK_CONTIGUOUS(extra_topk_length);
+    CHECK_SHAPE(q, b, s_q, h_q, q_bytes);
+    CHECK_SHAPE(kv, num_blocks, page_block_size, h_kv, kv_bytes);
+    CHECK_SHAPE(indices, b, s_q, topk);
+    CHECK_SHAPE(topk_length, b);
+    CHECK_SHAPE(attn_sink, h_q);
+    CHECK_SHAPE(extra_indices, b, s_q, extra_topk);
+    CHECK_SHAPE(extra_topk_length, b);
     TORCH_CHECK(kv.stride(1) == kv_bytes * h_kv, "dual KV row stride must be 528 bytes, got ",
                 kv.stride(1));
     TORCH_CHECK(kv.stride(0) % 512 == 0, "dual KV page stride must be divisible by 512 bytes, got ",
@@ -119,9 +119,9 @@ dual_mxfp8_sparse_attn_decode_interface(
     constexpr int fixed_overhead_num_blocks = 5;
     constexpr int block_size_topk = 64;
     if (!tile_scheduler_metadata.has_value()) {
-        tile_scheduler_metadata =
-            torch::empty({num_sm_parts, static_cast<int>(sizeof(mxdsa::DecodingSchedMeta) / sizeof(int))},
-                         opts.dtype(torch::kInt32));
+        tile_scheduler_metadata = torch::empty(
+            {num_sm_parts, static_cast<int>(sizeof(mxdsa::DecodingSchedMeta) / sizeof(int))},
+            opts.dtype(torch::kInt32));
         num_splits = torch::empty({b + 1}, opts.dtype(torch::kInt32));
         mxdsa::GetDecodeSchedMetaParams sched = {
             b,
@@ -139,8 +139,9 @@ dual_mxfp8_sparse_attn_decode_interface(
             at::cuda::getCurrentCUDAStream().stream()};
         mxdsa::split_kv::run_get_decoding_sched_meta_kernel(sched);
     }
-    KU_CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts, sizeof(mxdsa::DecodingSchedMeta) / sizeof(int));
-    KU_CHECK_SHAPE(num_splits, b + 1);
+    CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts,
+                sizeof(mxdsa::DecodingSchedMeta) / sizeof(int));
+    CHECK_SHAPE(num_splits, b + 1);
 
     mxdsa::SparseAttnDualMxfp8DecodeParams params = {
         b,
@@ -214,31 +215,31 @@ dual_mxfp8_sparse_attn_decode_interface(
     params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
 
     mxdsa::attention::run_dual_mxfp8_phase1_kernel<mxdsa::SparseAttnFwdMode::DecodeWithSplitKV,
-                                                            512>(params);
+                                                   512>(params);
 
     mxdsa::CombineParams combine = {b,
-                             s_q,
-                             h_q,
-                             d_v,
-                             lse.data_ptr<float>(),
-                             out.data_ptr(),
-                             int64_stride_to_int(lse.stride(0)),
-                             int64_stride_to_int(lse.stride(1)),
-                             int64_stride_to_int(out.stride(0)),
-                             int64_stride_to_int(out.stride(1)),
-                             int64_stride_to_int(out.stride(2)),
-                             lse_accum.data_ptr<float>(),
-                             o_accum.data_ptr<float>(),
-                             params.stride_lse_accum_split,
-                             params.stride_lse_accum_s_q,
-                             params.stride_o_accum_split,
-                             params.stride_o_accum_s_q,
-                             params.stride_o_accum_h_q,
-                             params.tile_scheduler_metadata_ptr,
-                             params.num_splits_ptr,
-                             num_sm_parts,
-                             get_optional_tensor_ptr<float>(attn_sink),
-                             at::cuda::getCurrentCUDAStream().stream()};
+                                    s_q,
+                                    h_q,
+                                    d_v,
+                                    lse.data_ptr<float>(),
+                                    out.data_ptr(),
+                                    int64_stride_to_int(lse.stride(0)),
+                                    int64_stride_to_int(lse.stride(1)),
+                                    int64_stride_to_int(out.stride(0)),
+                                    int64_stride_to_int(out.stride(1)),
+                                    int64_stride_to_int(out.stride(2)),
+                                    lse_accum.data_ptr<float>(),
+                                    o_accum.data_ptr<float>(),
+                                    params.stride_lse_accum_split,
+                                    params.stride_lse_accum_s_q,
+                                    params.stride_o_accum_split,
+                                    params.stride_o_accum_s_q,
+                                    params.stride_o_accum_h_q,
+                                    params.tile_scheduler_metadata_ptr,
+                                    params.num_splits_ptr,
+                                    num_sm_parts,
+                                    get_optional_tensor_ptr<float>(attn_sink),
+                                    at::cuda::getCurrentCUDAStream().stream()};
     mxdsa::split_kv::run_flash_mla_combine_kernel<bf16>(combine);
     return {out, lse.transpose(1, 2), tile_scheduler_metadata, num_splits};
 }

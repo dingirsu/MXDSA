@@ -26,20 +26,20 @@ class KUException final : public std::exception {
     const char* what() const noexcept override { return message.c_str(); }
 };
 
-#define THROW_KU_EXCEPTION(name, ...) throw ::mxdsa::KUException(name, __FILE__, __LINE__, __VA_ARGS__)
+#define THROW_EXCEPTION(name, ...) throw ::mxdsa::KUException(name, __FILE__, __LINE__, __VA_ARGS__)
 
-#define KU_CUDA_CHECK(call)                                                                        \
+#define CUDA_CHECK(call)                                                                           \
     do {                                                                                           \
         cudaError_t status_ = call;                                                                \
         if (status_ != cudaSuccess) {                                                              \
             fprintf(stderr, "CUDA error (%s:%d): %s\n", __FILE__, __LINE__,                        \
                     cudaGetErrorString(status_));                                                  \
-            THROW_KU_EXCEPTION("CUDA", "CUDA error: ", cudaGetErrorString(status_));               \
+            THROW_EXCEPTION("CUDA", "CUDA error: ", cudaGetErrorString(status_));                  \
         }                                                                                          \
     } while (0)
 
-// This `KU_ASSERT` is triggered no matter if the code is compiled with `-DNDEBUG` or not.
-#define KU_ASSERT(cond, ...)                                                                       \
+// This `ASSERT` is triggered no matter if the code is compiled with `-DNDEBUG` or not.
+#define ASSERT(cond, ...)                                                                          \
     do {                                                                                           \
         if (not(cond)) {                                                                           \
             fprintf(stderr, "Assertion `%s` failed (%s:%d): ", #cond, __FILE__, __LINE__);         \
@@ -47,11 +47,11 @@ class KUException final : public std::exception {
                 fprintf(stderr, ", " __VA_ARGS__);                                                 \
             }                                                                                      \
             fprintf(stderr, "\n");                                                                 \
-            THROW_KU_EXCEPTION("Assertion", "Assertion `", #cond, "` failed.");                    \
+            THROW_EXCEPTION("Assertion", "Assertion `", #cond, "` failed.");                       \
         }                                                                                          \
     } while (0)
 
-#define KU_CHECK_KERNEL_LAUNCH() KU_CUDA_CHECK(cudaGetLastError())
+#define CHECK_KERNEL_LAUNCH() CUDA_CHECK(cudaGetLastError())
 
 template <typename T> inline __host__ __device__ constexpr T ceil_div(const T& a, const T& b) {
     return (a + b - 1) / b;
@@ -71,7 +71,7 @@ static inline CUtensorMap make_tensor_map(
     CUtensorMapFloatOOBfill oob_fill = CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE,
     const std::vector<uint32_t>& element_strides_ = {}) {
     int dim = size.size();
-    KU_ASSERT(dim >= 1);
+    ASSERT(dim >= 1);
 
     std::vector<uint32_t> element_strides;
     if (element_strides_.empty()) {
@@ -80,8 +80,8 @@ static inline CUtensorMap make_tensor_map(
     } else {
         element_strides = element_strides_;
     }
-    KU_ASSERT(strides.size() == (uint32_t)dim - 1 && box_size.size() == (uint32_t)dim &&
-              element_strides.size() == (uint32_t)dim);
+    ASSERT(strides.size() == (uint32_t)dim - 1 && box_size.size() == (uint32_t)dim &&
+           element_strides.size() == (uint32_t)dim);
 
     CUtensorMap result;
     CUresult ret_code = cuTensorMapEncodeTiled(
@@ -110,7 +110,7 @@ static inline CUtensorMap make_tensor_map(
         printf("l2_promotion: %d\n", (int)l2_promotion);
         printf("interleave_mode: %d\n", (int)interleave_mode);
         printf("oob_fill: %d\n", (int)oob_fill);
-        KU_ASSERT(false);
+        ASSERT(false);
     }
     return result;
 }

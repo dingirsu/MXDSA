@@ -16,16 +16,11 @@ DEVICE void ld_shared_v2_u32(const void* p, int (&values)[2]) {
 DEVICE uint64_t ld_shared_acquire_u64(const void* p) {
     const uint32_t addr = cast_smem_ptr_to_uint(p);
     uint64_t value;
-    asm volatile("ld.acquire.cta.shared.b64 %0, [%1];"
-                 : "=l"(value)
-                 : "r"(addr)
-                 : "memory");
+    asm volatile("ld.acquire.cta.shared.b64 %0, [%1];" : "=l"(value) : "r"(addr) : "memory");
     return value;
 }
 
-DEVICE void prefetch_global_l1(const void* p) {
-    asm volatile("prefetch.global.L1 [%0];" ::"l"(p));
-}
+DEVICE void prefetch_global_l1(const void* p) { asm volatile("prefetch.global.L1 [%0];" ::"l"(p)); }
 
 DEVICE void st_shared(void* p, __int128_t v) {
     asm volatile("st.shared.b128 [%0], %1;" ::"l"(__cvta_generic_to_shared(p)), "q"(v));
@@ -51,8 +46,8 @@ void st_bulk(void* dst_ptr, int64_t size) {
 // should be either "evict_first", "evict_normal", "evict_last", "evict_unchanged", or "no_allocate"
 // L2_CACHE_HINT_STR should be either "evict_first", "evict_normal", or "evict_last"
 // L2_PREFETCH_SIZE_STR should be either "64B", "128B", or "256B"
-#define KU_LDG_256(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR,              \
-                   L2_PREFETCH_SIZE_STR)                                                           \
+#define LDG_256(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR,                 \
+                L2_PREFETCH_SIZE_STR)                                                              \
     {                                                                                              \
         static_assert(std::is_pointer_v<decltype(global_addr)> ||                                  \
                           std::is_array_v<decltype(global_addr)>,                                  \
@@ -72,7 +67,7 @@ void st_bulk(void* dst_ptr, int64_t size) {
 // L1_CACHE_HINT_STR should be either "evict_first", "evict_normal", "evict_last",
 // "evict_unchanged", or "no_allocate" L2_CACHE_HINT_STR should be either "evict_first",
 // "evict_normal", or "evict_last"
-#define KU_STG_256(global_addr, src, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR)                         \
+#define STG_256(global_addr, src, L1_CACHE_HINT_STR, L2_CACHE_HINT_STR)                            \
     {                                                                                              \
         static_assert(std::is_pointer_v<decltype(global_addr)> ||                                  \
                           std::is_array_v<decltype(global_addr)>,                                  \
@@ -86,7 +81,7 @@ void st_bulk(void* dst_ptr, int64_t size) {
                      : "l"(global_addr), "l"(src_as_uint64_ptr[0]), "l"(src_as_uint64_ptr[1]),     \
                        "l"(src_as_uint64_ptr[2]), "l"(src_as_uint64_ptr[3]));                      \
     }
-#define KU_LDG_128(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_PREFETCH_SIZE_STR)           \
+#define LDG_128(global_addr, result, NC_STR, L1_CACHE_HINT_STR, L2_PREFETCH_SIZE_STR)              \
     {                                                                                              \
         static_assert(std::is_pointer_v<decltype(global_addr)> ||                                  \
                           std::is_array_v<decltype(global_addr)>,                                  \

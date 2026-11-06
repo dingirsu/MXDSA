@@ -40,11 +40,8 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     static constexpr int D_K = D_QK;
     static constexpr int D_V = 512;
 
-    // Avoid -inf - (-inf) when the first tile contains no valid logits.
     static constexpr float MAX_INIT_VAL = -1e30;
 
-    // The 2-SM MMA still has 128 logical rows, but each CTA contributes all 64
-    // heads from a different query token in the adjacent-token pair.
     static constexpr int TOKEN_H_Q = 64;
     static constexpr int H_Q = 2 * TOKEN_H_Q;
     static constexpr int B_TOPK = !IS_DECODE ? PREFILL_B_TOPK : 64;
@@ -58,14 +55,11 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
         !IS_DECODE ? (128 + 4 + (FUSED_VALIDITY ? 0 : B_TOPK / 8) + 64 + 128) * 2 + 2
                    : (128 + 128 + 1 + 32 + 2 + 128) * 2;
 
-    // Prefill uses two stages for N128 and three for N64; decode uses four.
     static constexpr int NUM_K_BUFS = IS_DECODE ? 4 : (B_TOPK == 128 ? 2 : 3);
     static constexpr bool PREFETCH_INDICES = !IS_DECODE && B_TOPK == 128;
-    // N128 uses two 32KiB output stores.
     static constexpr bool SPLIT_O_STAGING = IS_DECODE || B_TOPK == 128;
     static constexpr int O_STAGE_D = SPLIT_O_STAGING ? D_V / 2 : D_V;
-    static constexpr int NUM_INDEX_BUFS =
-        IS_DECODE ? 6 : 4; // Keep metadata ahead of four K/V stages.
+    static constexpr int NUM_INDEX_BUFS = IS_DECODE ? 6 : 4;
 
     static constexpr int TMA_K_STRIDE_FOR_DECODING = D_QK;
     static constexpr int Q_QUANT_GROUP_SIZE = 64;
@@ -90,7 +84,7 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     // Tensor memory columns
     struct tmem_cols {
         //   0 ~ 256: Output accumulator
-        // 256 ~ 320: Native P (N64 prefill: 32 cols; decode: two D256 partials)
+        // 256 ~ 320: Native P 
         // 384 ~ 392: Double-buffered S scale factors
         // 448 ~ 512: Q/K/V scale factors
         static constexpr int O = 0;
