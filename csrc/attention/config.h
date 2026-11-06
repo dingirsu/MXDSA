@@ -164,9 +164,14 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     };
 
     static __device__ void sparse_attn_fwd_kernel_devfunc(const ArgT& params,
-                                                          const TmaParams& tma_params);
+                                                          const TmaParams& tma_params)
+        requires (!IS_DECODE);
+    static __device__ void sparse_attn_fwd_kernel_devfunc(const ArgT& params,
+                                                          const TmaParams& tma_params)
+        requires (IS_DECODE);
 
-    static void run(const ArgT& params);
+    static void run(const ArgT& params) requires (!IS_DECODE);
+    static void run(const ArgT& params) requires (IS_DECODE);
 };
 
 } // namespace sm100::dual_mxfp8
