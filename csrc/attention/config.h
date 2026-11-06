@@ -139,6 +139,8 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     };
 
     struct SharedMemoryPlanDecode : SharedMemoryPlanBase {
+        // Capacity per slot, not a limit on supported row length. Long aligned
+        // rows stream through these two slots in chunks owned by the index warp.
         static constexpr int RAW_INDEX_CAPACITY = 1024;
         ptx::array_aligned<int, RAW_INDEX_CAPACITY, 16> raw_indices[2];
         ptx::transac_bar_t bar_raw_indices_full[2];

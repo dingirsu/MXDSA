@@ -341,6 +341,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             ptx::tma_store_wait<0>();
             ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
             if (warp_idx == 1 && ptx::elect_one_sync()) {
+                // Prefetch whole short rows here. For longer aligned rows the
+                // index warp owns both raw slots and streams them in chunks.
                 const int raw_extra_start = (params.topk + 3) & ~3;
                 const bool raw_staged =
                     raw_extra_start + params.extra_topk <= SharedMemoryPlan::RAW_INDEX_CAPACITY &&
@@ -600,6 +602,11 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             int tma_coords_step_per_block = params.stride_kv_block / TMA_K_STRIDE_FOR_DECODING;
             int tma_coords_step_per_extra_block =
                 params.stride_extra_kv_block / TMA_K_STRIDE_FOR_DECODING;
+            // Long rows reuse both raw-index slots as a chunk pipeline owned
+            // entirely by this warp. WG0 only touches them for short rows.
+            // Keep the sequence across requests and main/extra ranges so each
+            // slot's mbarrier parity follows every asynchronous transaction.
+            int raw_chunk_sequence = 0;
 
             run_outer_loop([&](const OuterloopArgs& args) {
                 int* indices = (int*)params.indices + params.stride_indices_b * args.batch_idx +
@@ -608,21 +615,25 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                      params.stride_extra_indices_b * args.batch_idx +
                                      params.stride_extra_indices_s_q * args.s_q_idx;
                 const int raw_extra_start = (params.topk + 3) & ~3;
-                const bool raw_staged =
-                    raw_extra_start + params.extra_topk <= SharedMemoryPlan::RAW_INDEX_CAPACITY &&
+                const bool raw_bulk_aligned =
                     (params.topk & 3) == 0 && (params.extra_topk & 3) == 0 &&
                     (params.stride_indices_b & 3) == 0 && (params.stride_indices_s_q & 3) == 0 &&
                     (params.stride_extra_indices_b & 3) == 0 &&
                     (params.stride_extra_indices_s_q & 3) == 0 &&
                     (reinterpret_cast<uintptr_t>(params.indices) & 15) == 0 &&
                     (reinterpret_cast<uintptr_t>(params.extra_indices) & 15) == 0;
+                const bool raw_staged = raw_bulk_aligned &&
+                    raw_extra_start + params.extra_topk <= SharedMemoryPlan::RAW_INDEX_CAPACITY;
+                const bool raw_chunked = raw_bulk_aligned && !raw_staged;
                 const int* raw_src = smem.raw_indices[args.outer_loop_phase].data();
                 if (raw_staged)
                     smem.bar_raw_indices_full[args.outer_loop_phase].wait(decode_q_phase);
 
                 struct IsOrigBlock {};
                 struct IsExtraBlock {};
-                auto process_one_block = [&](int block_idx, auto is_extra_block_t) {
+                auto process_one_block = [&](int block_idx, auto is_extra_block_t,
+                                             const int* chunk_raw = nullptr,
+                                             int chunk_first_block = 0) {
                     auto [index_buf_idx, index_bar_phase] = rs.template get<NUM_INDEX_BUFS>();
                     static constexpr bool IS_EXTRA_BLOCK =
                         std::is_same_v<decltype(is_extra_block_t), IsExtraBlock>;
@@ -633,7 +644,18 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                                             : tma_coords_step_per_block;
 
                     int abs_pos, my_indices[2];
-                    if (!IS_EXTRA_BLOCK) {
+                    if (chunk_raw != nullptr) {
+                        abs_pos = (block_idx - (IS_EXTRA_BLOCK ? args.num_orig_kv_blocks : 0)) *
+                                      B_TOPK + lane_idx * 2;
+                        const int row_length = IS_EXTRA_BLOCK ? params.extra_topk : params.topk;
+                        if (abs_pos + 1 < row_length) {
+                            ptx::ld_shared_v2_u32(
+                                chunk_raw + (block_idx - chunk_first_block) * B_TOPK + lane_idx * 2,
+                                my_indices);
+                        } else {
+                            my_indices[0] = my_indices[1] = -1;
+                        }
+                    } else if (!IS_EXTRA_BLOCK) {
                         abs_pos = block_idx * B_TOPK + lane_idx * 2;
                         if (raw_staged) {
                             if (abs_pos + 1 < params.topk) {
@@ -719,17 +741,71 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     rs.update();
                 };
 
-                NO_UNROLL
-                for (int block_idx = args.start_block_idx;
-                     block_idx < min(args.num_orig_kv_blocks, args.end_block_idx); ++block_idx) {
-                    process_one_block(block_idx, IsOrigBlock{});
-                }
+                auto process_blocks = [&](int begin, int end, auto is_extra_block_t) {
+                    if (!raw_chunked) {
+                        NO_UNROLL
+                        for (int block_idx = begin; block_idx < end; ++block_idx)
+                            process_one_block(block_idx, is_extra_block_t);
+                        return;
+                    }
+                    static constexpr bool IS_EXTRA_BLOCK =
+                        std::is_same_v<decltype(is_extra_block_t), IsExtraBlock>;
+                    static constexpr int CHUNK_BLOCKS = SharedMemoryPlan::RAW_INDEX_CAPACITY / B_TOPK;
+                    static_assert(SharedMemoryPlan::RAW_INDEX_CAPACITY % B_TOPK == 0);
+                    if (begin >= end)
+                        return;
+                    const int num_chunks = mxdsa::ceil_div(end - begin, CHUNK_BLOCKS);
+                    const int* row = IS_EXTRA_BLOCK ? extra_indices : indices;
+                    const int row_length = IS_EXTRA_BLOCK ? params.extra_topk : params.topk;
 
-                NO_UNROLL
-                for (int block_idx = max(args.start_block_idx, args.num_orig_kv_blocks);
-                     block_idx < args.end_block_idx; ++block_idx) {
-                    process_one_block(block_idx, IsExtraBlock{});
-                }
+                    auto issue_chunk = [&](int chunk) {
+                        const int slot = (raw_chunk_sequence + chunk) & 1;
+                        const int first_block = begin + chunk * CHUNK_BLOCKS;
+                        const int source_offset =
+                            (first_block - (IS_EXTRA_BLOCK ? args.num_orig_kv_blocks : 0)) * B_TOPK;
+                        // Last chunks may contain fewer than 64 indices. The
+                        // launch-wide alignment guard guarantees a 16B size.
+                        const int count = max(0, min(min(end - first_block, CHUNK_BLOCKS) * B_TOPK,
+                                                     row_length - source_offset));
+                        if (ptx::elect_one_sync()) {
+                            smem.bar_raw_indices_full[slot].arrive_and_expect_tx(count * sizeof(int));
+                            if (count > 0)
+                                ptx::SM90_BULK_COPY_G2S::copy(
+                                    row + source_offset,
+                                    reinterpret_cast<uint64_t*>(&smem.bar_raw_indices_full[slot]),
+                                    smem.raw_indices[slot].data(), count * sizeof(int));
+                        }
+                    };
+
+                    issue_chunk(0);
+                    if (num_chunks > 1)
+                        issue_chunk(1);
+                    NO_UNROLL
+                    for (int chunk = 0; chunk < num_chunks; ++chunk) {
+                        const int sequence = raw_chunk_sequence + chunk;
+                        const int slot = sequence & 1;
+                        smem.bar_raw_indices_full[slot].wait((sequence / 2) & 1);
+                        const int first_block = begin + chunk * CHUNK_BLOCKS;
+                        NO_UNROLL
+                        for (int block_idx = first_block;
+                             block_idx < min(end, first_block + CHUNK_BLOCKS); ++block_idx)
+                            process_one_block(block_idx, is_extra_block_t,
+                                              smem.raw_indices[slot].data(), first_block);
+                        // All 32 readers must finish before the elected lane
+                        // lets the async proxy overwrite this slot. Downstream
+                        // warps only consume the separate coordinate ring.
+                        ptx::fence_view_async_shared();
+                        __syncwarp();
+                        if (chunk + 2 < num_chunks)
+                            issue_chunk(chunk + 2);
+                    }
+                    raw_chunk_sequence += num_chunks;
+                };
+
+                process_blocks(args.start_block_idx,
+                               min(args.num_orig_kv_blocks, args.end_block_idx), IsOrigBlock{});
+                process_blocks(max(args.start_block_idx, args.num_orig_kv_blocks),
+                               args.end_block_idx, IsExtraBlock{});
             });
         } else if (warp_idx == 10 || warp_idx == 11) {
             // Load the two unique UE8M0 words into registers and repeat
