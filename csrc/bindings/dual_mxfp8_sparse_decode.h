@@ -213,7 +213,7 @@ dual_mxfp8_sparse_attn_decode_interface(
     params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
     params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
 
-    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV,
+    sm100::dual_mxfp8::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV,
                                                             512>(params);
 
     CombineParams combine = {b,

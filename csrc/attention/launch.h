@@ -3,7 +3,7 @@
 #include "common/params.h"
 #include <type_traits>
 
-namespace sm100::dual_mxfp8::head64 {
+namespace sm100::dual_mxfp8 {
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK>
 void run_dual_mxfp8_phase1_kernel(

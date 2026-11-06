@@ -9,7 +9,7 @@
 
 #include "common/params.h"
 
-namespace sm100::dual_mxfp8::head64 {
+namespace sm100::dual_mxfp8 {
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct KernelTemplate {
 
@@ -111,27 +111,16 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     };
 
     struct SharedMemoryPlanBase {
-        // SS QK keeps Q live until the last QK MMA completes. The previous
-        // query's epilogue must not overwrite it while the next QK is running.
         ptx::array_aligned<fp8_e4m3, (H_Q / 2) * D_Q> Q[IS_DECODE ? 2 : 1];
-        ptx::array_aligned<ptx::bf16, IS_DECODE ? 512 : (H_Q / 2) * O_STAGE_D>
-            O; // Decode uses its completed Q slot; retain alignment.
-        // SV operand: all B_TOPK tokens, half the value dimensions per CTA.
-        // CTA0 holds V[:, 0:256]; CTA1 holds V[:, 256:512].
+        ptx::array_aligned<ptx::bf16, IS_DECODE ? 512 : (H_Q / 2) * O_STAGE_D> O; 
         ptx::array_aligned<fp8_e4m3, B_TOPK*(D_K / 2)> V[NUM_K_BUFS];
-        // QK operand: half the KV tokens, all D_K dimensions per CTA.
-        // This stores K input tiles, not QK scores (which live in TMEM P).
         ptx::array_aligned<fp8_e4m3, (B_TOPK / 2) * D_K> K[NUM_K_BUFS];
         ptx::transac_bar_t bar_K_full[NUM_K_BUFS];
-        // Each slot holds one complete B_TOPK tile, alternating across PV steps.
         ptx::array_aligned<fp8_e4m3, (H_Q / 2) * B_TOPK> S[2];
         alignas(16) float v_token_scale[NUM_K_BUFS][B_TOPK];
-        // One S scale per softmax row and K=32 atom. An N128 tile packs
-        // four scale bytes into one word and consumes four consecutive atoms.
         alignas(16) uint8_t s_scale_exp[NUM_K_BUFS][H_Q / 2][B_TOPK / 32];
-        // Final 64-row x 16B post-transpose source consumed by 2x64 UTCCP.
         ptx::array_aligned<fp8_e8m0, B_TOPK * 16> k_scale_mma[NUM_K_BUFS];
-        float reserved_p_exchange[4]; // Preserve existing prefill SMEM offsets.
+        float reserved_p_exchange[4];
         float rowwise_max_buf[128], rowwise_li_buf[128];
 
         alignas(16) char is_k_valid[NUM_INDEX_BUFS][B_TOPK / 8];
@@ -157,8 +146,6 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
         ptx::array_aligned<uint32_t, 1> tmem_start_addr;
     };
 
-    // Raw indices share the double-Q lifetime. Their full barriers are local;
-    // the existing Q-empty release follows all index consumers for that query.
     struct SharedMemoryPlanDecode : SharedMemoryPlanBase {
         static constexpr int RAW_INDEX_CAPACITY = 1024;
         ptx::array_aligned<int, RAW_INDEX_CAPACITY, 16> raw_indices[2];
@@ -182,4 +169,4 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     static void run(const ArgT& params);
 };
 
-} // namespace sm100::dual_mxfp8::head64
+} // namespace sm100::dual_mxfp8

@@ -111,7 +111,7 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         params.w2[i] = w2[i];
     }
 
-    sm100::dual_mxfp8::head64::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(
+    sm100::dual_mxfp8::run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(
         params);
     return {out, max_logits, lse};
 }

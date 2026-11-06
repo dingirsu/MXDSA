@@ -19,7 +19,7 @@
 #include "ptx/types.cuh"
 #include "ptx/warp.cuh"
 
-namespace sm100::dual_mxfp8::head64 {
+namespace sm100::dual_mxfp8 {
 
 using FwdMode = SparseAttnFwdMode;
 
@@ -46,10 +46,6 @@ template <FwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_kernel_devfunc(
     const ArgT& params, const TmaParams& tma_params) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
-    // Each 2-CTA cluster handles one adjacent query-token pair, and each CTA
-    // owns one native [64, D_Q] tile.  For an odd decode s_q, CTA 1 in the
-    // final cluster uses the last real Q as a dummy operand and skips stores.
-    // Cluster shape: [2, 1, 1]
     const int warp_idx = ptx::canonical_warp_idx_sync();
     const int lane_idx = threadIdx.x % 32;
     const int warpgroup_idx = ptx::canonical_warp_group_idx();
@@ -69,8 +65,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             smem.bar_sQ_full[slot].init(1);
             if constexpr (IS_DECODE)
                 smem.bar_raw_indices_full[slot].init(1);
-            // CTA0's barrier gathers the two warpgroup-0 Q-scale producers before
-            // CTA0 issues the single cta_group::2 UTCCP operation.
             smem.bar_Q_scale_ready[slot].init(2);
             smem.bar_tQ_empty[slot].init(1);
             smem.bar_tQ_full[slot].init(1);
@@ -93,10 +87,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
     } else if (warp_idx == 3 && ptx::elect_one_sync()) {
         UNROLL
         for (int i = 0; i < NUM_K_BUFS; ++i) {
-            // TMA completion contributes transaction bytes. Tuned N128 prefill paths
-            // use warp4's elected producer (CTA0 for K, CTA1 for V); other
-            // paths use the MMA consumer. Direct E4M3 gather does not add the
-            // historical decode dequant path's extra arrivals.
             smem.bar_V_full[i].init(1);
             smem.bar_K_full[i].init(1);
             smem.bar_V_empty[i].init(1);
@@ -114,11 +104,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         }
         UNROLL
         for (int i = 0; i < NUM_INDEX_BUFS; ++i) {
-            smem.bar_valid_coord_scales_full[i].init(!IS_DECODE ? (B_TOPK == 128 ? 2 : B_TOPK / 8)
-                                                                : 32);
-            // Decode has four elected gather producers, 128 softmax
-            // consumers, and 64 scale readers. Count scale reads explicitly
-            // before allowing the index producer to reuse this stage.
+            smem.bar_valid_coord_scales_full[i].init(!IS_DECODE ? (B_TOPK == 128 ? 2 : B_TOPK / 8) : 32);
             smem.bar_valid_coord_scales_empty[i].init(!IS_DECODE ? 128 : 128 + 4 + 64);
         }
         ptx::fence_barrier_init();
@@ -142,9 +128,9 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         int start_block_idx, end_block_idx;
         int topk_length;
 
-        int extra_topk_length, num_orig_kv_blocks; // extra-KV related
+        int extra_topk_length, num_orig_kv_blocks;
         bool is_no_split;
-        int n_split_idx; // splitkv related
+        int n_split_idx;
     };
 
     int decode_q_phase = 0;
@@ -170,7 +156,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                             ? __ldg(params.extra_topk_length + batch_idx)
                                             : params.extra_topk;
                 int total_topk_padded =
-                    orig_topk_padded + ptx::ceil(extra_topk_length, (int)B_TOPK); // % B_TOPK == 0
+                    orig_topk_padded + ptx::ceil(extra_topk_length, (int)B_TOPK);
                 int start_block_idx =
                     batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
                 int end_block_idx = batch_idx == sched_meta.end_req_idx
@@ -185,11 +171,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     batch_idx == sched_meta.begin_req_idx
                         ? (__ldg(params.num_splits_ptr + batch_idx) + sched_meta.begin_split_idx)
                         : __ldg(params.num_splits_ptr + batch_idx);
-
-                // start_block_idx = 0;
-                // end_block_idx = total_topk_padded / B_TOPK;
-                // is_split = false;
-                // n_split_idx = 0;
 
                 OuterloopArgs args = {(bool)outer_loop_phase,
                                       batch_idx,
@@ -211,8 +192,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 outer_loop_phase ^= 1;
             }
         } else {
-            // Prefill mode. Use CLC to allocate different s_q (for decoding, different batches +
-            // s_q) to different workers
             ptx::CLCResult next_job = {true, (int)blockIdx.x, !IS_DECODE ? 0 : (int)blockIdx.y, 0};
             NO_UNROLL
             while (next_job.is_valid) {
@@ -225,7 +204,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
                 if constexpr (!IS_DECODE) {
                     int num_k_blocks =
-                        max(ptx::ceil_div(topk_length, (int)B_TOPK), 1); // num_k_blocks always >= 1
+                        max(ptx::ceil_div(topk_length, (int)B_TOPK), 1);
                     OuterloopArgs args = {(bool)outer_loop_phase, 0,          s_q_idx, 0,
                                           num_k_blocks,           topk_length};
                     if constexpr (IS_DECODE)
@@ -238,7 +217,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                                 : params.extra_topk;
                     int total_topk_padded =
                         orig_topk_padded +
-                        ptx::ceil(extra_topk_length, (int)B_TOPK); // % B_TOPK == 0
+                        ptx::ceil(extra_topk_length, (int)B_TOPK);
 
                     OuterloopArgs args = {(bool)outer_loop_phase,
                                           batch_idx,
@@ -269,7 +248,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
     };
 
     if (warpgroup_idx == 0) {
-        // Q fetching and O writing back warpgroup
         ptx::warpgroup_reg_alloc<!IS_DECODE && B_TOPK == 128 ? 144 : 176>();
         const uint32_t warp_dp_addr = tmem_cols::V_scale + warp_idx * 32 * 65536;
         if constexpr (IS_DECODE) {
@@ -288,8 +266,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         ptx::fence_view_async_tmem_store();
 
         auto perform_o_copy_out = [&](const OuterloopArgs& args, bool is_last_o) {
-            // This query's last SV completion implies that all its Q reads
-            // have completed. The next query uses the other independent slot.
             ptx::bf16* o_storage;
             if constexpr (IS_DECODE)
                 o_storage = reinterpret_cast<ptx::bf16*>(smem.Q[args.outer_loop_phase].data());
@@ -306,8 +282,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
             float* sO_accum_addrs[B_EPI_SPLITKV / 4];
             if constexpr (FWD_MODE == FwdMode::DecodeWithSplitKV) {
-                // If split-KV is enabled, we need to store back O in float32
-                // View the output staging buffer as four FP32 split-KV tiles.
 
                 UNROLL
                 for (int i = 0; i < B_EPI_SPLITKV / 4; ++i) {
@@ -317,14 +291,11 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 }
             }
 
-            // outer_loop_phase is the loop phase corresponding to s_q_idx
 
-            // Get li (output_scale actually)
             smem.bar_li_full.wait(args.outer_loop_phase);
             float output_scale;
             if constexpr (IS_DECODE) {
                 const int head_idx = idx_in_warpgroup % 64;
-                // Preserve the original lower-half + upper-half addition order.
                 const float final_li =
                     smem.rowwise_li_buf[head_idx] + smem.rowwise_li_buf[head_idx + 64];
                 const float final_mi = smem.final_mi[head_idx];
@@ -360,9 +331,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 smem.bar_li_empty.arrive();
             }
             float2 output_scale_float2 = float2{output_scale, output_scale};
-
-            // Retrieve and store O, and calculate delta := sum(O*dO, dim=-1) if FWD_MODE is
-            // Recompute
             smem.bar_tOut_full.wait(args.outer_loop_phase);
             if constexpr (IS_DECODE)
                 ptx::tcgen05_after_thread_sync();
@@ -372,9 +340,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
             if (FWD_MODE != FwdMode::DecodeWithSplitKV || args.is_no_split) {
                 if constexpr (SPLIT_O_STAGING) {
-                    // Keep the first half in packed BF16 registers while
-                    // loading the second half. This releases O TMEM before
-                    // waiting to reuse the previous TMA store's SMEM buffer.
                     UNROLL
                     for (int chunk = 0; chunk < 2; ++chunk) {
                         float2 first[B_EPI / 2];
@@ -393,14 +358,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         ptx::fence_view_async_tmem_load();
                         if (chunk == 1) {
                             smem.bar_tOut_empty.arrive(1u);
-                            // Only the issuing lane waits for its TMA store;
-                            // all writers then observe completion together.
                             if (warp_idx == 0 && ptx::elect_one_sync())
                                 ptx::tma_store_wait<0>();
                             ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
                         }
-                        // Q and O have separate SMEM staging. O stores do
-                        // not depend on completion of the next Q-full phase.
                         UNROLL
                         for (int i = 0; i < B_EPI / 8; ++i) {
                             nv_bfloat162 second_bf16[4];
@@ -418,8 +379,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
                         if (warp_idx == 0 && ptx::elect_one_sync() &&
                             (!IS_DECODE || 2 * args.s_q_idx + cta_idx < params.s_q)) {
-                            // O is a streaming write; prefer retaining the
-                            // repeatedly gathered KV data in L2 instead.
                             const uint64_t cache_hint =
                                 ptx::create_simple_cache_policy<ptx::CacheHint::EVICT_FIRST>();
                             ptx::SM90_TMA_STORE_5D::copy(
@@ -493,7 +452,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         if (k == 0 && i == 0) {
                             if constexpr (!IS_DECODE)
                                 smem.bar_tQ_full[0].wait(args.outer_loop_phase ^ 1 ^
-                                                         is_last_o); // Wait for sQ's availability
+                                                         is_last_o);
                         }
                         ptx::st_shared(sO_accum_addrs[i] +
                                            cur_buf_idx * ((H_Q / 2) * B_EPI_SPLITKV * 2),
@@ -530,15 +489,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         last_args.batch_idx = -1;
 
         bool final_outer_loop_phase = run_outer_loop([&](const OuterloopArgs& args) {
-            // Both CTAs must finish reading Q and its TMEM scale words
-            // before WG0 publishes the next query. Waiting after the TMA
-            // load is too late for an SS operand.
             smem.bar_tQ_empty[IS_DECODE ? args.outer_loop_phase : 0].wait(
                 (IS_DECODE ? decode_q_phase : args.outer_loop_phase) ^ 1);
             ptx::tcgen05_after_thread_sync();
             if constexpr (IS_DECODE) {
-                // The prior loop wrote the output from this Q slot. Both
-                // issuing warps must finish its TMA reads before Q overwrites.
                 ptx::tma_store_wait<0>();
                 ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
             }
@@ -582,8 +536,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             }
             if constexpr (SPLIT_O_STAGING || IS_DECODE) {
                 if (warp_idx == 0 && ptx::elect_one_sync()) {
-                    // Decode Q has independent storage; wait for O immediately
-                    // before reusing output staging, after Q has been issued.
                     if constexpr (!IS_DECODE)
                         ptx::tma_store_wait<0>();
                     const int q_batch_base = [&]() {
@@ -606,11 +558,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 }
             }
             {
-                // Each lane loads Q heads r and r+32. The replicated 16B
-                // slots provide two packed words per head; arrange them in
-                // the eight consecutive Q-scale TMEM columns consumed by
-                // the QK MMA. Decode adds the batch stride, while prefill
-                // has one batch and uses the sequence stride directly.
                 const int head_idx = lane_idx;
                 const int q_token_idx = 2 * args.s_q_idx + cta_idx;
                 const int q_load_token_idx = min(q_token_idx, params.s_q - 1);
@@ -646,9 +593,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 ptx::tcgen05_before_thread_sync();
                 ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
                 if (warp_idx == 0 && ptx::elect_one_sync()) {
-                    // The MMA consumer is elected in CTA0, but both CTAs
-                    // contribute their Q-scale TMEM fragment. Publish CTA1's
-                    // completion into CTA0's barrier explicitly.
                     if (cta_idx == 0) {
                         smem.bar_Q_scale_ready[IS_DECODE ? args.outer_loop_phase : 0].arrive();
                     } else {
@@ -2013,4 +1957,4 @@ void run_dual_mxfp8_phase1_kernel(
     }
 }
 
-} // namespace sm100::dual_mxfp8::head64
+} // namespace sm100::dual_mxfp8

@@ -33,9 +33,7 @@ template <int NUM_ELEMS_PER_THREAD> DEVICE float get_max(float p[NUM_ELEMS_PER_T
     return local_max;
 }
 
-} // namespace sm100
 
-namespace sm100 {
 DEVICE
 char load_indices_and_generate_mask(int lane_idx, int* gIndices, int s_kv, int abs_pos_start,
                                     int topk_length) {
