@@ -6,7 +6,7 @@
 #include "common/utils.h"
 #include "common/host.h"
 
-namespace smxx::decode {
+namespace mxdsa::split_kv {
 
 __global__ void __launch_bounds__(32, 1, 1)
     get_mla_metadata_kernel(__grid_constant__ const GetDecodeSchedMetaParams params) {
@@ -37,7 +37,7 @@ __global__ void __launch_bounds__(32, 1, 1)
             if (cur_s_k == 0)
                 cur_s_k = 1; // Ensure the main loop will never be empty
             if (params.extra_topk) {
-                cur_s_k = ptx::ceil(cur_s_k, block_size_n);
+                cur_s_k = mxdsa::ceil(cur_s_k, block_size_n);
                 cur_s_k += params.extra_topk_length ? __ldg(params.extra_topk_length + i)
                                                     : params.extra_topk;
             }
@@ -63,7 +63,7 @@ __global__ void __launch_bounds__(32, 1, 1)
     __syncwarp();
 
     if (threadIdx.x == 0) {
-        int payload = ptx::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
+        int payload = mxdsa::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
 
         int now_req_idx = 0, now_block = 0, now_n_split_idx = 0, cum_num_splits = 0;
         num_splits_shared[0] = 0;
@@ -125,4 +125,4 @@ void run_get_decoding_sched_meta_kernel(GetDecodeSchedMetaParams& params) {
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 
-} // namespace smxx::decode
+} // namespace mxdsa::split_kv
