@@ -1,4 +1,7 @@
 #pragma once
+
+#include "ptx/ptx.cuh"
+
 namespace ptx {
 struct SM90_TMA_STORE_5D {
     DEVICE static void copy(void const* desc_ptr, void const* smem_ptr, int32_t const& crd0,

@@ -56,40 +56,39 @@ static inline PtrT* get_optional_tensor_ptr(const T& tensor_or_opt) {
 // Check whether the given tensor (or optional<tensor>) is on cuda
 #define KU_CHECK_DEVICE(tensor)                                                                    \
     TORCH_CHECK(                                                                                   \
-        ku::_check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_cuda(); }),       \
+        ptx::_check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_cuda(); }),      \
         #tensor " must be on CUDA")
 
 // Check whether the given tensor (or optional<tensor>) has the given number of dimensions
 #define KU_CHECK_NDIM(tensor, ndim)                                                                \
-    TORCH_CHECK(ku::_check_optional_tensor(                                                        \
+    TORCH_CHECK(ptx::_check_optional_tensor(                                                       \
                     tensor, [&](const at::Tensor& t) { return t.dim() == (ndim); }),               \
                 #tensor " must have " #ndim " dimensions")
 
 // Check whether the given tensor (or optional<tensor>) has the given shape
 #define KU_CHECK_SHAPE(tensor, ...)                                                                \
-    TORCH_CHECK(ku::_check_optional_tensor(tensor,                                                 \
-                                           [&](const at::Tensor& t) {                              \
-                                               return t.sizes() ==                                 \
-                                                      torch::IntArrayRef({__VA_ARGS__});           \
-                                           }),                                                     \
+    TORCH_CHECK(ptx::_check_optional_tensor(tensor,                                                \
+                                            [&](const at::Tensor& t) {                             \
+                                                return t.sizes() ==                                \
+                                                       torch::IntArrayRef({__VA_ARGS__});          \
+                                            }),                                                    \
                 #tensor " must have shape (" #__VA_ARGS__ ")")
 
 // Check whether the given tensor (or optional<tensor>) is contiguous
 #define KU_CHECK_CONTIGUOUS(tensor)                                                                \
-    TORCH_CHECK(                                                                                   \
-        ku::_check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_contiguous(); }), \
-        #tensor " must be contiguous")
+    TORCH_CHECK(ptx::_check_optional_tensor(                                                       \
+                    tensor, [](const at::Tensor& t) { return t.is_contiguous(); }),                \
+                #tensor " must be contiguous")
 
 // Check whether the last dimention of the given tensor (or optional<tensor>)
 #define KU_CHECK_LAST_DIM_CONTIGUOUS(tensor)                                                       \
     TORCH_CHECK(                                                                                   \
-        ku::_check_optional_tensor(                                                                \
+        ptx::_check_optional_tensor(                                                               \
             tensor, [](const at::Tensor& t) { return t.size(-1) == 1 || t.stride(-1) == 1; }),     \
         #tensor " must have contiguous last dimension")
 
 // Check whether the given tensor (or optional<tensor>) has the specified dtype
 #define KU_CHECK_DTYPE(tensor, target_dtype)                                                       \
-    TORCH_CHECK(ku::_check_optional_tensor(                                                        \
+    TORCH_CHECK(ptx::_check_optional_tensor(                                                       \
                     tensor, [](const at::Tensor& t) { return t.dtype() == (target_dtype); }),      \
                 #tensor " must have dtype " #target_dtype)
-namespace ku = ptx;

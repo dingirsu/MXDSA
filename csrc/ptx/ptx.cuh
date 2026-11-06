@@ -150,13 +150,3 @@ template <CacheHint C> DEVICE constexpr int64_t create_simple_cache_policy() {
                                           : 0x14f0000000000000;
 }
 } // namespace ptx
-#include "common/host.h"
-#include "ptx/ptx_tmem.cuh"
-#include "ptx/ptx_copy.cuh"
-#include "ptx/ptx_extra.cuh"
-namespace ku = ptx;
-using ptx::bf16;
-using ptx::fence_barrier_init;
-using ptx::fence_view_async_shared;
-using ptx::NamedBarrier;
-using ptx::transac_bar_t;

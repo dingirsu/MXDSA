@@ -6,10 +6,9 @@
 #include <math_constants.h>
 
 #include "common/params.h"
+#include "ptx/ptx_extra.cuh"
 
 namespace sm100::dual_mxfp8::head64 {
-
-using namespace ptx;
 
 template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct KernelTemplate {
 
@@ -86,7 +85,7 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     static constexpr int B_EPI = 64;
     static constexpr int B_EPI_SPLITKV = 32;
     static constexpr int NUM_EPI_SPLITKV_BUFS = IS_DECODE ? 2 : 4;
-    static_assert((H_Q / 2) * D_Q * sizeof(bf16) >=
+    static_assert((H_Q / 2) * D_Q * sizeof(ptx::bf16) >=
                   NUM_EPI_SPLITKV_BUFS * (H_Q / 2) * (B_EPI_SPLITKV * 2) * sizeof(float));
 
     // Tensor memory columns
@@ -113,56 +112,56 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     struct SharedMemoryPlanBase {
         // SS QK keeps Q live until the last QK MMA completes. The previous
         // query's epilogue must not overwrite it while the next QK is running.
-        array_aligned<fp8_e4m3, (H_Q / 2) * D_Q> Q[IS_DECODE ? 2 : 1];
-        array_aligned<bf16, IS_DECODE ? 512 : (H_Q / 2) * O_STAGE_D>
+        ptx::array_aligned<fp8_e4m3, (H_Q / 2) * D_Q> Q[IS_DECODE ? 2 : 1];
+        ptx::array_aligned<ptx::bf16, IS_DECODE ? 512 : (H_Q / 2) * O_STAGE_D>
             O; // Decode uses its completed Q slot; retain alignment.
         // SV operand: all B_TOPK tokens, half the value dimensions per CTA.
         // CTA0 holds V[:, 0:256]; CTA1 holds V[:, 256:512].
-        array_aligned<fp8_e4m3, B_TOPK*(D_K / 2)> V[NUM_K_BUFS];
+        ptx::array_aligned<fp8_e4m3, B_TOPK*(D_K / 2)> V[NUM_K_BUFS];
         // QK operand: half the KV tokens, all D_K dimensions per CTA.
         // This stores K input tiles, not QK scores (which live in TMEM P).
-        array_aligned<fp8_e4m3, (B_TOPK / 2) * D_K> K[NUM_K_BUFS];
-        transac_bar_t bar_K_full[NUM_K_BUFS];
+        ptx::array_aligned<fp8_e4m3, (B_TOPK / 2) * D_K> K[NUM_K_BUFS];
+        ptx::transac_bar_t bar_K_full[NUM_K_BUFS];
         // Each slot holds one complete B_TOPK tile, alternating across PV steps.
-        array_aligned<fp8_e4m3, (H_Q / 2) * B_TOPK> S[2];
+        ptx::array_aligned<fp8_e4m3, (H_Q / 2) * B_TOPK> S[2];
         alignas(16) float v_token_scale[NUM_K_BUFS][B_TOPK];
         // One S scale per softmax row and K=32 atom. An N128 tile packs
         // four scale bytes into one word and consumes four consecutive atoms.
         alignas(16) uint8_t s_scale_exp[NUM_K_BUFS][H_Q / 2][B_TOPK / 32];
         // Final 64-row x 16B post-transpose source consumed by 2x64 UTCCP.
-        array_aligned<fp8_e8m0, B_TOPK * 16> k_scale_mma[NUM_K_BUFS];
+        ptx::array_aligned<fp8_e8m0, B_TOPK * 16> k_scale_mma[NUM_K_BUFS];
         float reserved_p_exchange[4]; // Preserve existing prefill SMEM offsets.
         float rowwise_max_buf[128], rowwise_li_buf[128];
 
         alignas(16) char is_k_valid[NUM_INDEX_BUFS][B_TOPK / 8];
         LegacyIndexStorage index_storage;
 
-        transac_bar_t bar_sQ_full[IS_DECODE ? 2 : 1];
-        transac_bar_t bar_Q_scale_ready[IS_DECODE ? 2 : 1];
-        transac_bar_t bar_tQ_empty[IS_DECODE ? 2 : 1], bar_tQ_full[IS_DECODE ? 2 : 1];
-        transac_bar_t bar_tOut_full, bar_tOut_empty;
-        transac_bar_t bar_V_full[NUM_K_BUFS], bar_V_empty[NUM_K_BUFS];
-        transac_bar_t bar_K_scale_copy_ready[NUM_K_BUFS];
-        transac_bar_t bar_v_scale_full[NUM_K_BUFS], bar_v_scale_empty[NUM_K_BUFS];
-        transac_bar_t bar_P_empty;
-        transac_bar_t bar_QK_done[NUM_K_BUFS];
-        transac_bar_t bar_S_empty[2], bar_S_O_full[2];
-        transac_bar_t bar_li_full, bar_li_empty;
+        ptx::transac_bar_t bar_sQ_full[IS_DECODE ? 2 : 1];
+        ptx::transac_bar_t bar_Q_scale_ready[IS_DECODE ? 2 : 1];
+        ptx::transac_bar_t bar_tQ_empty[IS_DECODE ? 2 : 1], bar_tQ_full[IS_DECODE ? 2 : 1];
+        ptx::transac_bar_t bar_tOut_full, bar_tOut_empty;
+        ptx::transac_bar_t bar_V_full[NUM_K_BUFS], bar_V_empty[NUM_K_BUFS];
+        ptx::transac_bar_t bar_K_scale_copy_ready[NUM_K_BUFS];
+        ptx::transac_bar_t bar_v_scale_full[NUM_K_BUFS], bar_v_scale_empty[NUM_K_BUFS];
+        ptx::transac_bar_t bar_P_empty;
+        ptx::transac_bar_t bar_QK_done[NUM_K_BUFS];
+        ptx::transac_bar_t bar_S_empty[2], bar_S_O_full[2];
+        ptx::transac_bar_t bar_li_full, bar_li_empty;
 
-        transac_bar_t bar_clc_full, bar_clc_empty;
-        transac_bar_t bar_valid_coord_scales_full[NUM_INDEX_BUFS];
-        transac_bar_t bar_valid_coord_scales_empty[NUM_INDEX_BUFS];
+        ptx::transac_bar_t bar_clc_full, bar_clc_empty;
+        ptx::transac_bar_t bar_valid_coord_scales_full[NUM_INDEX_BUFS];
+        ptx::transac_bar_t bar_valid_coord_scales_empty[NUM_INDEX_BUFS];
 
-        ku::CLCResponseObj clc_response_obj;
-        array_aligned<uint32_t, 1> tmem_start_addr;
+        ptx::CLCResponseObj clc_response_obj;
+        ptx::array_aligned<uint32_t, 1> tmem_start_addr;
     };
 
     // Raw indices share the double-Q lifetime. Their full barriers are local;
     // the existing Q-empty release follows all index consumers for that query.
     struct SharedMemoryPlanDecode : SharedMemoryPlanBase {
         static constexpr int RAW_INDEX_CAPACITY = 1024;
-        array_aligned<int, RAW_INDEX_CAPACITY, 16> raw_indices[2];
-        transac_bar_t bar_raw_indices_full[2];
+        ptx::array_aligned<int, RAW_INDEX_CAPACITY, 16> raw_indices[2];
+        ptx::transac_bar_t bar_raw_indices_full[2];
         alignas(16) float final_mi[H_Q / 2];
     };
     using SharedMemoryPlan =

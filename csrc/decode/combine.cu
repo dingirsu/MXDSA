@@ -5,8 +5,7 @@
 
 #include "common/params.h"
 #include "common/utils.h"
-
-using namespace ptx;
+#include "common/host.h"
 
 namespace smxx::decode {
 
@@ -402,7 +401,7 @@ template <typename ElementT> void run_original_flash_mla_combine_kernel(CombineP
         attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attribute[0].val.programmaticStreamSerializationAllowed = 1;
         cudaLaunchConfig_t combine_kernel_config = {
-            dim3(params.b * params.s_q, 1, ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
+            dim3(params.b * params.s_q, 1, ptx::ceil_div(params.h_q, BLOCK_SIZE_M)),
             dim3(NUM_THREADS, 1, 1),
             0,
             params.stream,
@@ -436,8 +435,8 @@ template <typename ElementT> void run_flash_mla_combine_kernel(CombineParams& pa
         attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attribute[0].val.programmaticStreamSerializationAllowed = 1;
         cudaLaunchConfig_t combine_kernel_config = {
-            dim3(ku::ceil_div(params.num_sm_parts, 2) * params.s_q, 1,
-                 ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
+            dim3(ptx::ceil_div(params.num_sm_parts, 2) * params.s_q, 1,
+                 ptx::ceil_div(params.h_q, BLOCK_SIZE_M)),
             dim3(NUM_THREADS, 1, 1),
             0,
             params.stream,

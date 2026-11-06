@@ -1,4 +1,7 @@
 #pragma once
+
+#include "ptx/ptx.cuh"
+
 namespace ptx {
 // tma gather4
 // (https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-cp-async-bulk-tensor)

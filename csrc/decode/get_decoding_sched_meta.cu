@@ -4,6 +4,7 @@
 #include <cuda_runtime_api.h>
 
 #include "common/utils.h"
+#include "common/host.h"
 
 namespace smxx::decode {
 
@@ -36,7 +37,7 @@ __global__ void __launch_bounds__(32, 1, 1)
             if (cur_s_k == 0)
                 cur_s_k = 1; // Ensure the main loop will never be empty
             if (params.extra_topk) {
-                cur_s_k = ku::ceil(cur_s_k, block_size_n);
+                cur_s_k = ptx::ceil(cur_s_k, block_size_n);
                 cur_s_k += params.extra_topk_length ? __ldg(params.extra_topk_length + i)
                                                     : params.extra_topk;
             }

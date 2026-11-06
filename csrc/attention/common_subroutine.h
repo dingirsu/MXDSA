@@ -1,5 +1,7 @@
 #pragma once
 #include "ptx/ptx.cuh"
+#include "ptx/ptx_extra.cuh"
+#include "ptx/ptx_tmem.cuh"
 namespace sm100 {
 template <int D_V, int CHUNK_SIZE, int TMEM_COL_START> DEVICE void rescale_O(float scale_factor) {
     float2 scale_factor_float2 = {scale_factor, scale_factor};
@@ -8,16 +10,16 @@ template <int D_V, int CHUNK_SIZE, int TMEM_COL_START> DEVICE void rescale_O(flo
     UNROLL
     for (int chunk_idx = 0; chunk_idx < (D_V / 2) / CHUNK_SIZE; ++chunk_idx) {
         // Load O
-        ku::tmem_ld_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
+        ptx::tmem_ld_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
         ptx::fence_view_async_tmem_load();
 
         // Mult
         for (int i = 0; i < CHUNK_SIZE / 2; ++i) {
-            o[i] = ku::float2_mul(o[i], scale_factor_float2);
+            o[i] = ptx::float2_mul(o[i], scale_factor_float2);
         }
 
         // Store O
-        ku::tmem_st_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
+        ptx::tmem_st_32dp32bNx<CHUNK_SIZE>(TMEM_COL_START + chunk_idx * CHUNK_SIZE, o);
         ptx::fence_view_async_tmem_store();
     }
 }

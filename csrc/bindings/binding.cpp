@@ -91,8 +91,8 @@ std::vector<at::Tensor> dual_mxfp8_head64_sparse_prefill_interface(
         kv.data_ptr(),
         nullptr, // The dual kernel reads complete K scales from the page tail.
         indices.data_ptr<int>(),
-        ku::get_optional_tensor_ptr<float>(attn_sink),
-        ku::get_optional_tensor_ptr<int>(topk_length),
+        ptx::get_optional_tensor_ptr<float>(attn_sink),
+        ptx::get_optional_tensor_ptr<int>(topk_length),
         int64_stride_to_int(q.stride(0)),
         int64_stride_to_int(q.stride(1)),
         int64_stride_to_int(kv.stride(0)),

@@ -1,4 +1,7 @@
 #pragma once
+
+#include "ptx/ptx.cuh"
+
 namespace ptx {
 template <int N> DEVICE void tmem_ld_32dp32bNx(uint32_t addr, void* dst);
 template <int N> DEVICE void tmem_st_32dp32bNx(uint32_t addr, const void* src);
