@@ -5,6 +5,36 @@
 
 namespace ptx {
 
+// Read-only global loads with default cache policy and no extra prefetch hint.
+// Keep scalar/two-word accesses narrow for index tails and 8-byte scale payloads.
+DEVICE int ld_global_nc(const int* p) {
+    int value;
+    asm volatile("ld.global.nc.s32 %0, [%1];" : "=r"(value) : "l"(p));
+    return value;
+}
+
+DEVICE float ld_global_nc(const float* p) {
+    float value;
+    asm volatile("ld.global.nc.f32 %0, [%1];" : "=f"(value) : "l"(p));
+    return value;
+}
+
+DEVICE int2 ld_global_nc(const int2* p) {
+    int2 value;
+    asm volatile("ld.global.nc.v2.s32 {%0, %1}, [%2];"
+                 : "=r"(value.x), "=r"(value.y)
+                 : "l"(p));
+    return value;
+}
+
+DEVICE uint2 ld_global_nc(const uint2* p) {
+    uint2 value;
+    asm volatile("ld.global.nc.v2.u32 {%0, %1}, [%2];"
+                 : "=r"(value.x), "=r"(value.y)
+                 : "l"(p));
+    return value;
+}
+
 DEVICE void ld_shared_v2_u32(const void* p, int (&values)[2]) {
     const uint32_t addr = cast_smem_ptr_to_uint(p);
     asm volatile("ld.shared.v2.u32 {%0,%1}, [%2];"

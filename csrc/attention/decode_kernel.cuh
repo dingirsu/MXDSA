@@ -65,16 +65,9 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             smem.bar_V_full[i].init(1);
             smem.bar_K_full[i].init(1);
             smem.bar_V_empty[i].init(1);
-            // CTA0 issues a 2-CTA UTCCP, so its barrier must collect warp10
-            // and warp11 from both CTAs before either SMEM source is read.
             smem.bar_K_scale_copy_ready[i].init(4);
-            // Publish V token scales directly to softmax: QK's asynchronous
-            // completion is not a replacement for this shared-memory handoff.
-            // All 128 softmax threads release their reads before stage reuse.
             smem.bar_v_scale_full[i].init(64);
             smem.bar_v_scale_empty[i].init(128);
-            // The MMA completion releases this stage's scale source and is
-            // also consumed by the softmax workers as QK-ready.
             smem.bar_QK_done[i].init(1);
         }
         UNROLL
@@ -124,10 +117,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         for (int batch_idx = sched_meta.begin_req_idx; batch_idx <= sched_meta.end_req_idx;
              ++batch_idx) {
             int topk_length =
-                params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
+                params.topk_length ? ptx::ld_global_nc(params.topk_length + batch_idx) : params.topk;
             int orig_topk_padded = max(mxdsa::ceil(topk_length, (int)B_TOPK), (int)B_TOPK);
             int extra_topk_length = params.extra_topk_length
-                                        ? __ldg(params.extra_topk_length + batch_idx)
+                                        ? ptx::ld_global_nc(params.extra_topk_length + batch_idx)
                                         : params.extra_topk;
             int total_topk_padded = orig_topk_padded + mxdsa::ceil(extra_topk_length, (int)B_TOPK);
             int start_block_idx =
@@ -141,8 +134,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                                            : false);
             int n_split_idx =
                 batch_idx == sched_meta.begin_req_idx
-                    ? (__ldg(params.num_splits_ptr + batch_idx) + sched_meta.begin_split_idx)
-                    : __ldg(params.num_splits_ptr + batch_idx);
+                    ? (ptx::ld_global_nc(params.num_splits_ptr + batch_idx) + sched_meta.begin_split_idx)
+                    : ptx::ld_global_nc(params.num_splits_ptr + batch_idx);
 
             OuterloopArgs args = {(bool)outer_loop_phase,
                                   batch_idx,
@@ -202,7 +195,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             const float final_mi = smem.final_mi[head_idx];
             smem.bar_li_empty.arrive();
             const float attn_sink =
-                params.attn_sink == nullptr ? -CUDART_INF_F : __ldg(params.attn_sink + head_idx);
+                params.attn_sink == nullptr ? -CUDART_INF_F : ptx::ld_global_nc(params.attn_sink + head_idx);
             if (args.is_no_split)
                 output_scale =
                     __fdividef(1.0f, final_li + exp2f(fmaf(attn_sink, CUDART_L2E_F, -final_mi)));
@@ -401,9 +394,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 ptx::NamedBarrier::arrive_and_wait(128, barrier_ids::WG0_SYNC);
                 perform_o_copy_out(last_args, false);
             }
-            // The next Q-empty acquisition already waits for the MMA
-            // consumer to finish this QK, including its Q-full acquisition.
-            // It therefore protects Q-full reuse without a WG0 observer.
             last_args = args;
         });
         if (last_args.batch_idx != -1) {
@@ -645,7 +635,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 my_indices[0] = my_indices[1] = -1;
                             }
                         } else {
-                            *(int2*)my_indices = __ldg((int2*)(indices + abs_pos));
+                            *(int2*)my_indices = ptx::ld_global_nc((int2*)(indices + abs_pos));
                         }
                     } else {
                         abs_pos = (block_idx - args.num_orig_kv_blocks) * B_TOPK + lane_idx * 2;
@@ -661,12 +651,12 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         } else {
                             my_indices[0] = abs_pos < params.extra_topk
                                                 ? (raw_staged ? raw_src[raw_extra_start + abs_pos]
-                                                              : __ldg(extra_indices + abs_pos))
+                                                              : ptx::ld_global_nc(extra_indices + abs_pos))
                                                 : -1;
                             my_indices[1] =
                                 abs_pos + 1 < params.extra_topk
                                     ? (raw_staged ? raw_src[raw_extra_start + abs_pos + 1]
-                                                  : __ldg(extra_indices + abs_pos + 1))
+                                                  : ptx::ld_global_nc(extra_indices + abs_pos + 1))
                                     : -1;
                         }
                     }
@@ -818,7 +808,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         (token_valid ? smem.index_storage.k_scale_offset[index_buf_idx][row] : 0));
 
                     const uint2 packed =
-                        token_valid ? __ldg(reinterpret_cast<const uint2*>(src)) : make_uint2(0, 0);
+                        token_valid ? ptx::ld_global_nc(reinterpret_cast<const uint2*>(src)) : make_uint2(0, 0);
                     // Load into registers before waiting to overwrite the
                     // stage. Softmax releases it only after QK and V reads.
                     smem.bar_v_scale_empty[k_buf_idx].wait(k_bar_phase ^ 1);

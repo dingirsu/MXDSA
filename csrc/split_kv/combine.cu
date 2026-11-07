@@ -1,4 +1,4 @@
-#include "ptx/common.cuh"
+#include "ptx/memory.cuh"
 #include "split_kv/combine.h"
 
 #include <math_constants.h>
@@ -28,8 +28,8 @@ __global__ void __launch_bounds__(NUM_THREADS)
         return;
     }
 
-    const int start_split_idx = __ldg(params.num_splits_ptr + batch_idx);
-    const int end_split_idx = __ldg(params.num_splits_ptr + batch_idx + 1);
+    const int start_split_idx = ptx::ld_global_nc(params.num_splits_ptr + batch_idx);
+    const int end_split_idx = ptx::ld_global_nc(params.num_splits_ptr + batch_idx + 1);
     const int my_num_splits = end_split_idx - start_split_idx;
     if (my_num_splits == 1) {
         return;
@@ -97,7 +97,7 @@ __global__ void __launch_bounds__(NUM_THREADS)
 
         if (params.attn_sink != nullptr) {
             int q_head_idx = h_block_idx * BLOCK_SIZE_M + warp_idx;
-            float attn_sink = __ldg(params.attn_sink + q_head_idx);
+            float attn_sink = ptx::ld_global_nc(params.attn_sink + q_head_idx);
             if (global_lse != INFINITY) {
                 // If attn_sink is +inf, global_lse will be +inf and scale factors will be
                 // exp2f(local_lse - inf) = 0 (since local_lse never becomes +inf) If attn_sink is
@@ -178,8 +178,8 @@ __global__ void __launch_bounds__(NUM_THREADS)
             return;
         }
 
-        const int start_split_idx = __ldg(params.num_splits_ptr + batch_idx);
-        const int end_split_idx = __ldg(params.num_splits_ptr + batch_idx + 1);
+        const int start_split_idx = ptx::ld_global_nc(params.num_splits_ptr + batch_idx);
+        const int end_split_idx = ptx::ld_global_nc(params.num_splits_ptr + batch_idx + 1);
         const int my_num_splits = end_split_idx - start_split_idx;
         if (my_num_splits == 1) {
             return;
@@ -227,7 +227,7 @@ __global__ void __launch_bounds__(NUM_THREADS)
                 gLse[weight_head] = global_lse / (float)M_LOG2E;
                 if (params.attn_sink != nullptr) {
                     const float attn_sink =
-                        __ldg(params.attn_sink + h_block_idx * BLOCK_SIZE_M + weight_head);
+                        ptx::ld_global_nc(params.attn_sink + h_block_idx * BLOCK_SIZE_M + weight_head);
                     if (global_lse != INFINITY)
                         global_lse += log2f(1 + exp2f(attn_sink * CUDART_L2E_F - global_lse));
                     else
@@ -274,7 +274,7 @@ __global__ void __launch_bounds__(NUM_THREADS)
 
                 if (params.attn_sink != nullptr) {
                     int q_head_idx = h_block_idx * BLOCK_SIZE_M + warp_idx;
-                    float attn_sink = __ldg(params.attn_sink + q_head_idx);
+                    float attn_sink = ptx::ld_global_nc(params.attn_sink + q_head_idx);
                     if (global_lse != INFINITY) {
                         // If attn_sink is +inf, global_lse will be +inf and scale factors will be
                         // exp2f(local_lse - inf) = 0 (since local_lse never becomes +inf) If

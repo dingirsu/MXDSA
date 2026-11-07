@@ -113,7 +113,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             int s_q_idx = next_job.x / 2; // pair index for this head64 prefill kernel
 
             int topk_length =
-                params.topk_length != nullptr ? __ldg(params.topk_length + s_q_idx) : params.topk;
+                params.topk_length != nullptr ? ptx::ld_global_nc(params.topk_length + s_q_idx) : params.topk;
 
             int num_k_blocks = max(mxdsa::ceil_div(topk_length, (int)B_TOPK), 1);
             OuterloopArgs args = {(bool)outer_loop_phase, 0, s_q_idx, 0, num_k_blocks, topk_length};
@@ -648,7 +648,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 ptx::prefetch_global_l1(tile_indices + B_TOPK + row);
                             }
                             tile_token[part] = scale_warp == 0 || k * B_TOPK + 64 < params.topk
-                                                   ? __ldg(tile_indices + row)
+                                                   ? ptx::ld_global_nc(tile_indices + row)
                                                    : -1;
                         }
                         UNROLL
@@ -658,7 +658,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             const uint2* source = reinterpret_cast<const uint2*>(
                                 scale_base +
                                 static_cast<int64_t>(valid ? token : 0) * K_SCALE_SLOT_BYTES);
-                            tile_scale[part] = valid ? __ldg(source) : make_uint2(0, 0);
+                            tile_scale[part] = valid ? ptx::ld_global_nc(source) : make_uint2(0, 0);
                         }
                     }
                     uint32_t first_valid_bits = 0;
@@ -668,7 +668,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         const int* g_indices =
                             params.indices + args.s_q_idx * params.stride_indices_s_q + k * B_TOPK;
                         const int token_idx =
-                            B_TOPK == 128 ? tile_token[row_part] : __ldg(g_indices + row);
+                            B_TOPK == 128 ? tile_token[row_part] : ptx::ld_global_nc(g_indices + row);
                         const bool token_valid = token_idx >= 0 && token_idx < params.s_kv;
                         const int safe_token_idx = token_valid ? token_idx : 0;
                         const uint8_t* k_scale_base =
@@ -685,7 +685,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         const uint2 packed =
                             B_TOPK == 128
                                 ? tile_scale[row_part]
-                                : (token_valid ? __ldg(reinterpret_cast<const uint2*>(src))
+                                : (token_valid ? ptx::ld_global_nc(reinterpret_cast<const uint2*>(src))
                                                : make_uint2(0, 0));
                         if constexpr (FUSED_VALIDITY) {
                             // N128 combines two ballots into one 64-bit mask per warp.
@@ -1055,7 +1055,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     int head_idx = idx_in_warpgroup;
                     float attn_sink = params.attn_sink == nullptr
                                           ? -CUDART_INF_F
-                                          : __ldg(params.attn_sink + head_idx);
+                                          : ptx::ld_global_nc(params.attn_sink + head_idx);
                     float output_scale =
                         __fdividef(1.0f, li + exp2f(fmaf(attn_sink, CUDART_L2E_F, -mi)));
                     smem.rowwise_li_buf[idx_in_warpgroup] = li == 0.0f ? 0.0f : output_scale;
