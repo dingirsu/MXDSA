@@ -62,4 +62,4 @@ Q/KV 使用仓库约定的 `uint8` 打包格式，包含 E4M3 数据和 UE8M0 sc
 
 感谢 [NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)
 
-相关许可证见 [LICENSE.deepseek](LICENSE.deepseek) 和 [LICENSE.cutlass](LICENSE.cutlass)。
+本项目的原创代码采用 [MIT License](LICENSE)，版权归 dingirsu 所有。来自 DeepSeek 和 NVIDIA CUTLASS 的代码分别遵循 [LICENSE.deepseek](LICENSE.deepseek) 和 [LICENSE.cutlass](LICENSE.cutlass) 中的许可条款，并保留原版权声明。
