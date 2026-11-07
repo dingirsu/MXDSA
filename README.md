@@ -1,8 +1,6 @@
 # MXDSA
 
-MXDSA 是面向 NVIDIA Blackwell GPU 的 **MXFP8 稀疏注意力推理 kernel**，实现了 prefill 和 decode 两条路径。它根据外部提供的 top-k 索引读取 KV，使用 MXFP8 Tensor Core 计算 attention，并输出 BF16 结果，主要用于研究和优化低精度稀疏注意力的性能。
-
-当前实现针对 **64 个 query heads、1 个 KV head、512 维 Q/K/V**，提供 PyTorch 扩展和独立 CUDA 库。Decode 支持分页 KV、主 KV 与 extra KV，以及 split-KV 调度和结果合并。仓库不包含 top-k 索引选择器或完整模型推理框架。
+MXDSA 是面向 NVIDIA Blackwell GPU 的 **MXFP8 Deepseek Sparse Attention kernel**。
 
 ## 与 FlashMLA 的速度对比
 
