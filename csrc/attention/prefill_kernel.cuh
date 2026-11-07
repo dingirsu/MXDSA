@@ -533,7 +533,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         if (k == args.start_block_idx)
                             smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                         ptx::tcgen05_after_thread_sync();
-                        mxdsa::attention::issue_sv<B_TOPK, false>(
+                        mxdsa::attention::issue_sv<B_TOPK>(
                             smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                             tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                             tmem_cols::V_scale, k == args.start_block_idx);
@@ -545,7 +545,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                             smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                         }
                         ptx::tcgen05_after_thread_sync();
-                        mxdsa::attention::issue_sv<B_TOPK, false>(
+                        mxdsa::attention::issue_sv<B_TOPK>(
                             smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                             tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                             tmem_cols::V_scale, k == args.start_block_idx);
@@ -586,7 +586,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     copy_k_scale_smem_to_tmem(smem.k_scale_mma[k_buf_idx].data(),
                                               tmem_cols::K_scale);
                     ptx::tcgen05_before_thread_sync();
-                    mxdsa::attention::issue_qk<B_TOPK, false>(
+                    mxdsa::attention::issue_qk<B_TOPK>(
                         smem.Q[0].data(), smem.K[k_buf_idx].data(), tmem_cols::P,
                         tmem_cols::Q_scale + (0), tmem_cols::K_scale);
                     ptx::umma_arrive_multicast_2x1SM_noelect(smem.bar_QK_done[k_buf_idx], 1 | 2);

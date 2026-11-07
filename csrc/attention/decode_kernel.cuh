@@ -421,8 +421,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         mxdsa::RingBufferState rs;
 
         // Decode gathers both V's 64-token half-D tile and QK's native
-        // 32-token full-D tile per CTA. Both D256 partials now belong to
-        // the same softmax thread, eliminating their shared-memory exchange.
+        // 32-token full-D tile per CTA.
         if (ptx::elect_one_sync()) {
             const int producer_warp = warp_idx - 4;
             run_outer_loop([&](const OuterloopArgs& args) {
@@ -504,7 +503,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         smem.bar_tOut_empty.wait(args.outer_loop_phase ^ 1);
                     }
                     ptx::tcgen05_after_thread_sync();
-                    mxdsa::attention::issue_sv<B_TOPK, true>(
+                    mxdsa::attention::issue_sv<B_TOPK>(
                         smem.S[s_buf_idx].data(), smem.V[k_buf_idx].data(), tmem_cols::O,
                         tmem_cols::S_scale + s_buf_idx * tmem_cols::S_scale_stride,
                         tmem_cols::V_scale, k == args.start_block_idx);
@@ -542,7 +541,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     copy_k_scale_smem_to_tmem(smem.k_scale_mma[k_buf_idx].data(),
                                               tmem_cols::K_scale);
                     ptx::tcgen05_before_thread_sync();
-                    mxdsa::attention::issue_qk<B_TOPK, true>(
+                    mxdsa::attention::issue_qk<B_TOPK>(
                         smem.Q[args.outer_loop_phase].data(), smem.K[k_buf_idx].data(),
                         tmem_cols::P, tmem_cols::Q_scale + args.outer_loop_phase * 8,
                         tmem_cols::K_scale);
@@ -878,17 +877,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 smem.bar_QK_done[k_buf_idx].wait(k_bar_phase);
                 ptx::tcgen05_after_thread_sync();
                 {
-                    // Same D256 addition as the old path, with both
-                    // partials in this thread's TMEM lane. No peer exchange.
-                    float p_peer[NUM_ELEMS_PER_THREAD];
                     ptx::tmem_ld_32dp32bNx<NUM_ELEMS_PER_THREAD>(tmem_cols::P, p);
-                    ptx::tmem_ld_32dp32bNx<NUM_ELEMS_PER_THREAD>(tmem_cols::P + B_TOPK / 2, p_peer);
-                    ptx::fence_view_async_tmem_load();
-                    UNROLL
-                    for (int i = 0; i < NUM_ELEMS_PER_THREAD; i += 2)
-                        *reinterpret_cast<float2*>(p + i) =
-                            ptx::float2_add(*reinterpret_cast<float2*>(p + i),
-                                            *reinterpret_cast<float2*>(p_peer + i));
                     ptx::fence_view_async_tmem_load();
                     ptx::tcgen05_before_thread_sync();
                     smem.bar_P_empty.arrive(0u);
@@ -992,7 +981,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 ptx::fence_view_async_tmem_store();
                 UNROLL
                 for (int i = 0; i < NUM_ELEMS_PER_THREAD / 16; ++i) {
-                    fp8_e4m3* sS_base = mxdsa::attention::k_major_ptr<64, 0>(
+                    fp8_e4m3* sS_base = mxdsa::attention::k_major_ptr<64, 64>(
                         smem.S[s_buf_idx].data(), s_row, s_col_base + i * 16);
                     ptx::st_shared(sS_base, *reinterpret_cast<__int128_t*>(s + i * 16));
                 }
