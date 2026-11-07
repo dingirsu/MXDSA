@@ -47,7 +47,7 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
     static constexpr int B_TOPK = !IS_DECODE ? PREFILL_B_TOPK : 64;
     static_assert(B_TOPK == 64 || B_TOPK == 128);
     static constexpr int NUM_THREADS = 128 * 4;
-    // The long path generates validity bytes from the scale indices, so
+    // The B_TOPK128 path generates validity bytes from the scale indices, so
     // warp9 no longer contributes eight CLC consumers in each CTA.
     // QK and SV each contribute one elected MMA issuer across the CTA pair.
     static constexpr bool FUSED_VALIDITY = !IS_DECODE && B_TOPK == 128;
@@ -112,7 +112,6 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK = 64> struct 
         alignas(16) float v_token_scale[NUM_K_BUFS][B_TOPK];
         alignas(16) uint8_t s_scale_exp[NUM_K_BUFS][H_Q / 2][B_TOPK / 32];
         ptx::array_aligned<fp8_e8m0, B_TOPK * 16> k_scale_mma[NUM_K_BUFS];
-        float reserved_p_exchange[4];
         float rowwise_max_buf[128], rowwise_li_buf[128];
 
         alignas(16) char is_k_valid[NUM_INDEX_BUFS][B_TOPK / 8];

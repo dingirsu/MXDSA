@@ -480,11 +480,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         }
     } else if (warpgroup_idx == 2) {
         ptx::warpgroup_reg_dealloc<80>();
-        // Rotate logical roles only within physical warpgroup 2 for decode.
-        // Register allocation, lanes, buffers, and synchronization are unchanged.
-        const int wg2_physical_warp = warp_idx;
-        const int warp_idx = 8 + ((wg2_physical_warp - 8 + 2) & 3);
-
         mxdsa::RingBufferState rs;
         // CTA1 issues SV independently; CTA0 issues QK.
         if (warp_idx == 8 && cta_idx == 1 && ptx::elect_one_sync()) {
