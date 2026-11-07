@@ -16,14 +16,6 @@ MXDSA 是面向 NVIDIA Blackwell GPU 的 **MXFP8 Deepseek Sparse Attention kerne
 
 实线为延迟，绿色虚线为加速比（右轴），阴影为 P20–P80。图中标注的是各组的**最高加速比**。
 
-在扫描范围的最后一个点，延迟为：
-
-| 场景 | topk / extra topk | FlashMLA | MXDSA | 加速比 |
-| --- | ---: | ---: | ---: | ---: |
-| Prefill | topk = 4,096 | 34.05 ms | 16.82 ms | 2.02× |
-| Decode，batch = 64 | extra topk = 4,096 | 304.13 μs | 148.45 μs | 2.05× |
-| Decode，batch = 128 | extra topk = 4,096 | 587.54 μs | 265.02 μs | 2.22× |
-
 ### 测试条件
 
 - **硬件与软件**：NVIDIA B30Z，148 SM；CUDA 13.2，PyTorch 2.13.0+cu132。
