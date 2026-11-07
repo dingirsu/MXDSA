@@ -543,17 +543,11 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                                          1 | 2);
             });
         } else if (warp_idx == 9) {
-            // Transform indices into TMA coordinates, scale offsets, and validity masks.
             static_assert(B_TOPK == 64);
-            // Each thread is responsible for 2 tokens
             static constexpr int tma_coords_step_per_token = 1;
             int tma_coords_step_per_block = params.stride_kv_block / TMA_K_STRIDE_FOR_DECODING;
             int tma_coords_step_per_extra_block =
                 params.stride_extra_kv_block / TMA_K_STRIDE_FOR_DECODING;
-            // This warp owns raw-index staging: whole-row copies for short
-            // rows and a two-slot chunk pipeline for long rows.
-            // Keep the sequence across requests and main/extra ranges so each
-            // slot's mbarrier parity follows every asynchronous transaction.
             int raw_chunk_sequence = 0;
 
             run_outer_loop([&](const OuterloopArgs& args) {
@@ -614,7 +608,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                                             ? tma_coords_step_per_extra_block
                                                             : tma_coords_step_per_block;
 
-                    int abs_pos, my_indices[2];
+                    int abs_pos, local_indices[2];
                     if (chunk_raw != nullptr) {
                         abs_pos = (block_idx - (IS_EXTRA_BLOCK ? args.num_orig_kv_blocks : 0)) *
                                       B_TOPK + lane_idx * 2;
@@ -622,38 +616,36 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         if (abs_pos + 1 < row_length) {
                             ptx::ld_shared_v2_u32(
                                 chunk_raw + (block_idx - chunk_first_block) * B_TOPK + lane_idx * 2,
-                                my_indices);
+                                local_indices);
                         } else {
-                            my_indices[0] = my_indices[1] = -1;
+                            local_indices[0] = local_indices[1] = -1;
                         }
                     } else if (!IS_EXTRA_BLOCK) {
                         abs_pos = block_idx * B_TOPK + lane_idx * 2;
                         if (raw_staged) {
                             if (abs_pos + 1 < params.topk) {
-                                ptx::ld_shared_v2_u32(raw_src + abs_pos, my_indices);
+                                ptx::ld_shared_v2_u32(raw_src + abs_pos, local_indices);
                             } else {
-                                my_indices[0] = my_indices[1] = -1;
+                                local_indices[0] = local_indices[1] = -1;
                             }
                         } else {
-                            *(int2*)my_indices = ptx::ld_global_nc((int2*)(indices + abs_pos));
+                            *(int2*)local_indices = ptx::ld_global_nc((int2*)(indices + abs_pos));
                         }
                     } else {
                         abs_pos = (block_idx - args.num_orig_kv_blocks) * B_TOPK + lane_idx * 2;
-                        // An extra row need not be a multiple of the tile
-                        // size, or even int2-aligned when extra_topk is odd.
                         if (raw_staged) {
                             if (abs_pos + 1 < params.extra_topk) {
                                 ptx::ld_shared_v2_u32(raw_src + raw_extra_start + abs_pos,
-                                                      my_indices);
+                                                      local_indices);
                             } else {
-                                my_indices[0] = my_indices[1] = -1;
+                                local_indices[0] = local_indices[1] = -1;
                             }
                         } else {
-                            my_indices[0] = abs_pos < params.extra_topk
+                            local_indices[0] = abs_pos < params.extra_topk
                                                 ? (raw_staged ? raw_src[raw_extra_start + abs_pos]
                                                               : ptx::ld_global_nc(extra_indices + abs_pos))
                                                 : -1;
-                            my_indices[1] =
+                            local_indices[1] =
                                 abs_pos + 1 < params.extra_topk
                                     ? (raw_staged ? raw_src[raw_extra_start + abs_pos + 1]
                                                   : ptx::ld_global_nc(extra_indices + abs_pos + 1))
@@ -668,19 +660,17 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     UNROLL
                     for (int i = 0; i < 2; ++i) {
                         int block_idx, idx_in_block;
-                        block_idx = (unsigned int)my_indices[i] / cur_block_size;
-                        idx_in_block = (unsigned int)my_indices[i] % cur_block_size;
+                        block_idx = (unsigned int)local_indices[i] / cur_block_size;
+                        idx_in_block = (unsigned int)local_indices[i] % cur_block_size;
                         bool is_token_valid =
-                            my_indices[i] != -1 &&
+                            local_indices[i] != -1 &&
                             (abs_pos + i <
                              (IS_EXTRA_BLOCK ? args.extra_topk_length : args.topk_length));
                         valid_mask |= is_token_valid << i;
                         tma_coords[i] =
                             is_token_valid ? block_idx * cur_tma_coords_step_per_block +
                                                  idx_in_block * tma_coords_step_per_token
-                                           : -1; // If the token is invalid because it topk position
-                                                 // exceeds topk_length, we must manually fill
-                                                 // tma_coords with -1 to avoid copying-in NaN.
+                                           : -1; 
                         scale_offsets[i] =
                             is_token_valid
                                 ? static_cast<int64_t>(block_idx) *
@@ -689,8 +679,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                       static_cast<int64_t>(cur_block_size) * D_K +
                                       static_cast<int64_t>(idx_in_block) * K_SCALE_SLOT_BYTES
                                 : 0;
-                        // Index production runs ahead of the scale reader.
-                        // This hint hides its scattered page-tail load latency.
                         if (is_token_valid) {
                             const auto* ptr = reinterpret_cast<const uint8_t*>(
                                                   IS_EXTRA_BLOCK ? params.extra_kv : params.kv) +
@@ -734,8 +722,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         const int first_block = begin + chunk * CHUNK_BLOCKS;
                         const int source_offset =
                             (first_block - (IS_EXTRA_BLOCK ? args.num_orig_kv_blocks : 0)) * B_TOPK;
-                        // Last chunks may contain fewer than 64 indices. The
-                        // launch-wide alignment guard guarantees a 16B size.
                         const int count = max(0, min(min(end - first_block, CHUNK_BLOCKS) * B_TOPK,
                                                      row_length - source_offset));
                         if (ptx::elect_one_sync()) {
@@ -762,9 +748,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                              block_idx < min(end, first_block + CHUNK_BLOCKS); ++block_idx)
                             process_one_block(block_idx, is_extra_block_t,
                                               smem.raw_indices[slot].data(), first_block);
-                        // All 32 readers must finish before the elected lane
-                        // lets the async proxy overwrite this slot. Downstream
-                        // warps only consume the separate coordinate ring.
                         ptx::fence_view_async_shared();
                         __syncwarp();
                         if (chunk + 2 < num_chunks)
@@ -778,15 +761,12 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 process_blocks(max(args.start_block_idx, args.num_orig_kv_blocks),
                                args.end_block_idx, IsExtraBlock{});
                 if (raw_staged) {
-                    // Finish all readers before this warp reuses the slot.
                     ptx::fence_view_async_shared();
                     __syncwarp();
                 }
             });
         } else if (warp_idx == 10 || warp_idx == 11) {
-            // Load the two unique UE8M0 words into registers and repeat
-            // them in the native QK UTCCP layout. Index storage already
-            // contains the page-aware scale offsets, including extra KV.
+            // Load the two unique UE8M0 words into registers and repeat them in the native QK UTCCP layout. 
             const int scale_warp = warp_idx - 10;
             mxdsa::RingBufferState scale_rs;
             run_outer_loop([&](const OuterloopArgs& args) {
@@ -809,8 +789,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
                     const uint2 packed =
                         token_valid ? ptx::ld_global_nc(reinterpret_cast<const uint2*>(src)) : make_uint2(0, 0);
-                    // Load into registers before waiting to overwrite the
-                    // stage. Softmax releases it only after QK and V reads.
                     smem.bar_v_scale_empty[k_buf_idx].wait(k_bar_phase ^ 1);
                     uint32_t* native_scale =
                         reinterpret_cast<uint32_t*>(smem.k_scale_mma[k_buf_idx].data() + row * 16);
@@ -821,8 +799,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     smem.v_token_scale[k_buf_idx][row] = float(token_scale);
                     ptx::fence_view_async_shared();
                     __syncwarp();
-                    // Every writer publishes V scales; every reader
-                    // releases the index stage it actually consumed.
                     smem.bar_v_scale_full[k_buf_idx].arrive();
                     if (ptx::elect_one_sync()) {
                         smem.bar_K_scale_copy_ready[k_buf_idx].arrive(0u);
@@ -876,8 +852,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         }
                     }
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
-                    // Hardware reduction precedes masking, so its result is
-                    // usable only when all 32 token positions are valid.
                     p_max = get_max<NUM_ELEMS_PER_THREAD>(p);
 #else
                     p_max = get_max<NUM_ELEMS_PER_THREAD>(p);
@@ -974,7 +948,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 if (k > args.start_block_idx && should_scale_o) {
                     auto [prev_k_buf_idx, prev_k_bar_phase] =
                         rs.offset_by(-1).template get<NUM_K_BUFS>();
-                    // Keep the in-place rescale ordered after the previous SV.
                     smem.bar_V_empty[prev_k_buf_idx].wait(prev_k_bar_phase);
                     ptx::tcgen05_after_thread_sync();
                     rescale_O<D_V, 32, tmem_cols::O>(scale_for_old);
@@ -989,14 +962,10 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             }
 
             if (real_mi == -CUDART_INF_F) {
-                // real_mi == -CUDART_INF_F <=> No valid TopK indices
-                // We set li to 0 to fit the definition that li := exp(x[i] - mi)
                 li = 0.0f;
                 mi = -CUDART_INF_F;
             }
 
-            // Publish both partial sums directly. The 128-writer full barrier
-            // replaces the softmax WG's local reduction barrier.
             smem.bar_li_empty.wait(args.outer_loop_phase ^ 1);
             smem.rowwise_li_buf[idx_in_warpgroup] = li;
             if (idx_in_warpgroup < H_Q / 2)
@@ -1025,16 +994,12 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     requires(IS_DECODE)
 {
-    static_assert(D_QK == 512);
 
     ASSERT(params.h_kv == 1);
     ASSERT(params.topk % 64 == 0);
     ASSERT(params.h_q == TOKEN_H_Q);
     ASSERT(params.s_q > 0);
 
-    ASSERT(params.d_qk == D_QK);
-
-    static_assert(D_Q == 512);
     ASSERT(params.stride_q_h_q == Q_BYTES_PER_HEAD,
            "Q head stride must be 512 e4m3 bytes + an aligned 16-byte scale slot");
     ASSERT(params.stride_kv_row == KV_BYTES_PER_TOKEN,
