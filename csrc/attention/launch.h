@@ -22,7 +22,6 @@ void run_dual_mxfp8_phase1_kernel(
     }
 }
 
-// The CUDA translation units provide these instantiations for host-only callers.
 extern template void run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(
     const MxFp8SparseAttnFwdParams&);
 extern template void run_dual_mxfp8_phase1_kernel<SparseAttnFwdMode::DecodeWithSplitKV, 512>(

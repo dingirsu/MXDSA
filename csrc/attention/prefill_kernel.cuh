@@ -305,28 +305,19 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 // Copy Q for this round
 
                 if (warp_idx == 0 && ptx::elect_one_sync()) {
-                    // Wait for sQ to become empty, and issue G -> S copy for Q
-                    ptx::tma_store_wait<0>(); // This thread must be the same one as o copy out
-                                              // thread (since `elect_one_sync()` always returns
-                                              // the same thread for the same `mask`, according
-                                              // to PTX document)
+                    ptx::tma_store_wait<0>(); 
 
                     int q_token_idx = 2 * args.s_q_idx + cta_idx;
-                    // A 2-SM operation cannot drop the second CTA.  Clamp the odd
-                    // tail CTA to the final real token so it receives a valid Q
-                    // tile and can participate in every transaction and barrier.
                     int q_load_token_idx = min(q_token_idx, params.s_q - 1);
                     ptx::SM100_TMA_2SM_LOAD_5D_NOSPLIT::copy(
                         &tma_params.tensor_map_q, (uint64_t*)&smem.bar_sQ_full[0],
                         ptx::create_simple_cache_policy<ptx::CacheHint::EVICT_FIRST>(),
                         smem.Q[0].data(), 0, 0, 0, 0, q_load_token_idx);
 
-                    // Both CTAs contribute their native E4M3 Q tile. The SS
-                    // operand stays in SMEM until the last QK MMA releases it.
                     if (cta_idx == 0) {
                         smem.bar_sQ_full[0].arrive_and_expect_tx(H_Q * D_Q * sizeof(fp8_e4m3));
                         smem.bar_sQ_full[0].wait(args.outer_loop_phase);
-                        // Q remains in SMEM; the SS QK MMA consumes it directly.
+                        // Q remains in SMEM
                         ptx::umma_arrive_multicast_2x1SM_noelect(smem.bar_tQ_full[0], 1 | 2);
                     }
                 }
@@ -336,9 +327,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
 
                 perform_o_copy_out(last_args, false);
             }
-            // The next Q-empty acquisition already waits for the MMA
-            // consumer to finish this QK, including its Q-full acquisition.
-            // It therefore protects Q-full reuse without a WG0 observer.
             last_args = args;
         });
         if (last_args.batch_idx != -1) {
@@ -355,12 +343,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
         ptx::warpgroup_reg_dealloc<B_TOPK == 128 ? 128 : 80>();
         mxdsa::RingBufferState rs;
 
-        const int warp_idx =
-            ptx::canonical_warp_idx(); // Using `warp_idx` without `__shfl_sync` is faster
+        const int warp_idx = ptx::canonical_warp_idx(); 
         if (ptx::elect_one_sync()) {
-            // KV fetching threads
-            // Keep the short-topk loop free of loop-carried prefetch
-            // state; merely disabling its loads changed its codegen.
             if constexpr (PREFETCH_INDICES) {
                 run_outer_loop([&](const OuterloopArgs& args) {
                     int* gIndices = params.indices + args.s_q_idx * params.stride_indices_s_q;
@@ -373,8 +357,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         for (int local_row = 0; local_row < NUM_ROWS_PER_THREAD / 8;
                              local_row += 1) {
                             int row = local_row * (4 * 8) + (warp_idx - 4) * 8;
-                            // Each vector has eight indices; topk is a multiple of 64.
-                            // Never read into the following query's index row.
                             if (local_row >= NUM_ROWS_PER_THREAD / 16 &&
                                 k * B_TOPK + 64 >= params.topk) {
                                 UNROLL
@@ -382,8 +364,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                     dest[local_row * 8 + i] = -1;
                                 continue;
                             }
-                            // Let N128 metadata readers reuse these index lines in L1.
-                            // Keep low retention priority for the streaming gather path.
                             LDG_256(gIndices + k * B_TOPK + row, dest + local_row * 8, ".nc",
                                     "evict_first", "evict_first", "256B");
                         }
@@ -396,19 +376,14 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         auto [k_buf_idx, k_bar_phase] = rs.template get<NUM_K_BUFS>();
                         int next_indices[NUM_ROWS_PER_THREAD];
                         const bool has_next = k + 1 < args.end_block_idx;
-                        // Hide the next indices load behind this tile's
-                        // slot wait and QK/V gather instructions.
                         if (has_next)
                             load_indices(k + 1, next_indices);
-                        // QK completion releases only K; V remains live until
-                        // KV-empty. Their separate buffers can be filled separately.
                         smem.bar_QK_done[k_buf_idx].wait(k_bar_phase ^ 1);
                         if (warp_idx == 4 && cta_idx == 0) {
                             smem.bar_K_full[k_buf_idx].arrive_and_expect_tx(B_TOPK * D_K *
                                                                             sizeof(fp8_e4m3));
                         }
 
-                        // Native QK partitions K by tokens: B_TOPK/2 full rows per CTA.
                         UNROLL
                         for (int r = 0; r < NUM_ROWS_PER_THREAD / 2; r += 4) {
                             int row = (warp_idx - 4) * 8 + (r / 8) * 32 + r % 8;
@@ -475,7 +450,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         }
                         smem.bar_V_empty[k_buf_idx].wait(k_bar_phase ^ 1);
 
-                        // Native QK partitions K by tokens: B_TOPK/2 full rows per CTA.
                         UNROLL
                         for (int r = 0; r < NUM_ROWS_PER_THREAD / 2; r += 4) {
                             int row = (warp_idx - 4) * 8 + (r / 8) * 32 + r % 8;
@@ -623,9 +597,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 });
             }
         } else if (warp_idx == 10 || warp_idx == 11) {
-            // Each scale warp handles B_TOPK/2 tokens, in one or two
-            // groups of 32. Scale words are packed for the duplicated
-            // DP layout; each UE8M0 byte serves two K=32 MMAs.
+            // Scale words are packed duplicately
             const int scale_warp = warp_idx - 10;
             mxdsa::RingBufferState scale_rs;
             run_outer_loop([&](const OuterloopArgs& args) {
@@ -677,18 +649,12 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         const uint32_t* src = reinterpret_cast<const uint32_t*>(
                             k_scale_base +
                             static_cast<int64_t>(safe_token_idx) * K_SCALE_SLOT_BYTES);
-
-                        // Fetch both unique UE8M0 words before waiting for
-                        // the ring slot. Native N64 needs token-ordered rows:
-                        // UTCCP replicates rows0..31 into DP warps0/1, and
-                        // rows32..63 into DP warps2/3, in each CTA.
                         const uint2 packed =
                             B_TOPK == 128
                                 ? tile_scale[row_part]
                                 : (token_valid ? ptx::ld_global_nc(reinterpret_cast<const uint2*>(src))
                                                : make_uint2(0, 0));
                         if constexpr (FUSED_VALIDITY) {
-                            // N128 combines two ballots into one 64-bit mask per warp.
                             const uint32_t valid_bits = __ballot_sync(
                                 0xffffffffu, token_valid && k * B_TOPK + row < args.topk_length);
                             if (row_part == 0) {
@@ -704,10 +670,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 smem.bar_valid_coord_scales_full[index_buf_idx].arrive();
                             }
                         }
-                        // Acquiring the whole old stage once covers both
-                        // row groups; new consumers wait for the final ready.
                         if (row_part == 0) {
-                            // Softmax releases V scales only after acquiring QK-done.
                             smem.bar_v_scale_empty[k_buf_idx].wait(k_bar_phase ^ 1);
                         }
                         if constexpr (B_TOPK == 128) {
@@ -715,7 +678,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 reinterpret_cast<uint32_t*>(smem.k_scale_mma[k_buf_idx].data() +
                                                             (scale_warp * 32 + lane_idx) * 16);
                             if (row_part == 0) {
-                                // Both row groups are loaded and the entire old stage is free.
                                 const uint4 packed_rows =
                                     make_uint4(tile_scale[0].x, tile_scale[1].x, tile_scale[0].y,
                                                tile_scale[1].y);
@@ -740,14 +702,8 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     }
                     scale_rs.update();
                 }
-                // Rejoin the prefetched scale producer before entering
-                // the persistent task handoff. This also keeps racecheck
-                // from stalling on masked queries with index prefetch.
                 if constexpr (PREFETCH_INDICES)
-                    __syncwarp();
-                // The CLC producer must run inside this same outer-loop
-                // body. A second run_outer_loop after scale completion
-                // would wait for the very query it is supposed to issue.
+                    __syncwarp(); // without this warp sync may runinto race?
                 if (warp_idx == 10 && ptx::elect_one_sync()) {
                     if (cta_idx == 0) {
                         smem.bar_clc_empty.wait(args.outer_loop_phase ^ 1);
@@ -785,8 +741,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 using ValidMask = std::conditional_t<B_TOPK == 128, uint64_t, uint32_t>;
                 ValidMask valid;
                 if constexpr (FUSED_VALIDITY) {
-                    // Complete the mask read before allowing the producer
-                    // to reuse its shared slot, even while QK is pending.
                     valid = ptx::ld_shared_acquire_u64(
                         reinterpret_cast<ValidMask*>(smem.is_k_valid[indices_buf_idx]) +
                         local_warp_idx / 2);
@@ -795,8 +749,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                 smem.bar_QK_done[k_buf_idx].wait(k_bar_phase);
                 ptx::tcgen05_after_thread_sync();
                 {
-                    // Each warp reads its native QK logits without a partial-D
-                    // exchange: 32 values for N64 and 64 for N128.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
                     if constexpr (B_TOPK == 128) {
                         float max0, max1;
@@ -826,8 +778,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                         }
                     }
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
-                    // Hardware reduction precedes masking, so its result is
-                    // usable only when all 32 token positions are valid.
                     if (valid != static_cast<ValidMask>(-1))
                         p_max = get_max<NUM_ELEMS_PER_THREAD>(p);
 #else
@@ -1020,7 +970,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                     if (k > args.start_block_idx && should_scale_o) {
                         auto [prev_k_buf_idx, prev_k_bar_phase] =
                             rs.offset_by(-1).template get<NUM_K_BUFS>();
-                        // Keep the in-place rescale ordered after the previous SV.
                         smem.bar_V_empty[prev_k_buf_idx].wait(prev_k_bar_phase);
                         ptx::tcgen05_after_thread_sync();
                         rescale_O<D_V, 32, tmem_cols::O>(scale_for_old);
@@ -1037,8 +986,6 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
             }
 
             if (real_mi == -CUDART_INF_F) {
-                // real_mi == -CUDART_INF_F <=> No valid TopK indices
-                // We set li to 0 to fit the definition that li := exp(x[i] - mi)
                 li = 0.0f;
                 mi = -CUDART_INF_F;
             }
@@ -1093,7 +1040,6 @@ template <SparseAttnFwdMode FWD_MODE, int D_QK, int PREFILL_B_TOPK>
 void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     requires(!IS_DECODE)
 {
-    static_assert(D_QK == 512);
 
     ASSERT(params.h_kv == 1);
     ASSERT(params.topk % 64 == 0);
@@ -1102,7 +1048,6 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
     ASSERT(params.s_q % 2 == 0);
     ASSERT(params.d_qk == D_QK);
 
-    static_assert(D_Q == 512);
     ASSERT(params.stride_q_h_q == Q_BYTES_PER_HEAD,
            "Q head stride must be 512 e4m3 bytes + an aligned 16-byte scale slot");
     ASSERT(params.stride_kv_h_kv == KV_BYTES_PER_TOKEN,
@@ -1123,9 +1068,6 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
 
     CUtensorMap tensor_map_kv;
     [[maybe_unused]] CUtensorMap tensor_map_k_scale = {};
-    // The storage tensor is exposed as 528-byte logical envelopes, but
-    // inside the packed page all 512-byte E4M3 rows are contiguous and
-    // the replicated 16-byte scale slots form a separate tail plane.
     tensor_map_kv =
         mxdsa::make_tensor_map({D_QK, (unsigned long)params.s_kv}, {(unsigned long)D_K}, {128, 1},
                                params.kv, CU_TENSOR_MAP_DATA_TYPE_UINT8, CU_TENSOR_MAP_SWIZZLE_128B,
@@ -1134,8 +1076,6 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
 
     CUtensorMap tensor_map_o;
     if constexpr (SPLIT_O_STAGING) {
-        // Pair output segments separated by D_V/2. Each store covers 64 or
-        // 128 dimensions per side, according to the selected staging capacity.
         tensor_map_o = mxdsa::make_tensor_map(
             {64, TOKEN_H_Q, D_V / 128, 2ul, (unsigned long)params.s_q},
             mxdsa::make_stride_helper<int>({D_V, 64, D_V / 2, TOKEN_H_Q * D_V}, sizeof(ptx::bf16)),
@@ -1159,8 +1099,6 @@ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::run(const ArgT& params)
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     dim3 grid_shape;
-    // grid_shape counts CTAs, while each logical query pair is one
-    // two-CTA cluster.
     grid_shape = dim3(params.s_q, 1, 1);
 
     cudaLaunchAttribute attr{};

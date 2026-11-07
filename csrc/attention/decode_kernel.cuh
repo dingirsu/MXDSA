@@ -851,11 +851,7 @@ __device__ void KernelTemplate<FWD_MODE, D_QK, PREFILL_B_TOPK>::sparse_attn_fwd_
                                 p[i] = -CUDART_INF_F;
                         }
                     }
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1030 && __CUDA_ARCH__ < 1100
                     p_max = get_max<NUM_ELEMS_PER_THREAD>(p);
-#else
-                    p_max = get_max<NUM_ELEMS_PER_THREAD>(p);
-#endif
                 }
 
                 float cur_pi_max = p_max * params.sm_scale_div_log2;
