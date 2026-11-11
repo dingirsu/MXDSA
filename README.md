@@ -1,55 +1,54 @@
 # MXDSA
 
-MXDSA 是面向 NVIDIA Blackwell GPU 的 **MXFP8 Deepseek Sparse Attention kernel**。
+MXDSA is an **MXFP8 DeepSeek Sparse Attention kernel** optimized for NVIDIA Blackwell GPUs.
 
-## 与 FlashMLA 的速度对比
+## Performance Comparison with FlashMLA
 
-在 NVIDIA B30Z（SM103）上，与 FlashMLA 的 **non-fused、head64、head dim 512** 路径比较，已记录测试中的最高加速如下。加速比为 `FlashMLA 延迟 / MXDSA 延迟`。
+The table below shows the maximum speedups recorded on NVIDIA B30Z (SM103), compared with FlashMLA’s **non-fused, head64, head dim 512** path. Speedup is calculated as `FlashMLA latency / MXDSA latency`.
 
-| 场景 | 测试范围 | 最高加速 | 对应位置 |
+| Scenario | Test Range | Maximum Speedup | Configuration |
 | --- | --- | ---: | --- |
-| Prefill，sq = 65,536 | topk = 128–4,096 | **2.03×** | topk = 3,968 |
-| Decode，batch = 64，sq = 6 | extra topk = 0–4,096 | **2.05×** | extra topk = 3,968 |
-| Decode，batch = 128，sq = 6 | extra topk = 0–4,096 | **2.22×** | extra topk = 4,096 |
+| Prefill, sq = 65,536 | topk = 128–4,096 | **2.03×** | topk = 3,968 |
+| Decode, batch = 64, sq = 6 | extra topk = 0–4,096 | **2.05×** | extra topk = 3,968 |
+| Decode, batch = 128, sq = 6 | extra topk = 0–4,096 | **2.22×** | extra topk = 4,096 |
 
-![MXDSA 与 FlashMLA 的延迟及加速比对比](assets/comparison_styled.png)
+![MXDSA vs. FlashMLA: Latency and Speedup](assets/comparison_styled.png)
 
-实线为延迟，绿色虚线为加速比（右轴），阴影为 P20–P80。图中标注的是各组的**最高加速比**。
+Solid lines show latency, green dashed lines show speedup (right axis), and shaded regions indicate P20–P80. Annotations mark the **maximum speedup** for each group.
 
-### 测试条件
+### Test Conditions
 
-- **硬件与软件**：NVIDIA B30Z，148 SM；CUDA 13.2，PyTorch 2.13.0+cu132。
-- **Prefill**：sq = 65,536，KV 长度 = 16,384；topk 从 128 到 4,096，步长 128。
-- **Decode**：batch = 64 / 128，sq = 6；每个请求的主 KV 长度和主 topk 均为 128，extra KV 长度为 16,384；extra topk 从 0 到 4,096，步长 128。总 topk 为 `128 + extra topk`。
+- **Hardware and software**: NVIDIA B30Z, 148 SMs; CUDA 13.2, PyTorch 2.13.0+cu132.
+- **Prefill**: sq = 65,536, KV length = 16,384; topk ranges from 128 to 4,096 in increments of 128.
+- **Decode**: batch = 64 / 128, sq = 6; each request has a main KV length and main topk of 128, with an extra KV length of 16,384; extra topk ranges from 0 to 4,096 in increments of 128. Total topk is `128 + extra topk`.
 
-## 构建与使用
+## Building and Usage
 
-需要 Blackwell GPU、支持 `sm_100f` / `sm_103f` 的 CUDA Toolkit 和支持 C++20 的编译器。构建 Python 扩展还需要兼容的 PyTorch；上述测试环境使用 CUDA 13.2。
+Requires a Blackwell GPU, a CUDA Toolkit that supports `sm_100f` / `sm_103f`, and a compiler with C++20 support. Building the Python extension also requires a compatible version of PyTorch. The benchmarks above used CUDA 13.2.
 
 ```bash
-# 构建 PyTorch 扩展：build/mxdsa_ext.so
+# Build the PyTorch extension: build/mxdsa_ext.so
 ./build.sh
 
-# 或构建独立 CUDA 库：build/cuda/libmxdsa.so
+# Or build the standalone CUDA library: build/cuda/libmxdsa.so
 ./build.sh --cuda-only
 ```
 
-可通过 `CUDA_HOME`、`PYTHON`、`BUILD_DIR` 指定工具链和输出目录。Python 调用示例见 [tests/benchmark.py](tests/benchmark.py)，输入打包辅助函数见 [tests/mxfp8_test_utils.py](tests/mxfp8_test_utils.py)。
+Use `CUDA_HOME`, `PYTHON`, and `BUILD_DIR` to configure the toolchain and output directory. See [tests/benchmark.py](tests/benchmark.py) for Python usage examples and [tests/mxfp8_test_utils.py](tests/mxfp8_test_utils.py) for input-packing helpers.
 
-扩展提供两个入口：
+The extension provides two entry points:
 
-| 接口 | 用途 |
+| Interface | Purpose |
 | --- | --- |
-| `dual_mxfp8_head64_sparse_prefill_fwd` | Prefill，返回输出、max logits 和 log-sum-exp |
-| `dual_mxfp8_sparse_decode_fwd` | Decode，返回输出、log-sum-exp 和可复用的调度信息 |
+| `dual_mxfp8_head64_sparse_prefill_fwd` | Prefill; returns the output, max logits, and log-sum-exp |
+| `dual_mxfp8_sparse_decode_fwd` | Decode; returns the output, log-sum-exp, and reusable scheduling information |
 
-Q/KV 使用仓库约定的 `uint8` 打包格式，包含 E4M3 数据和 UE8M0 scale；KV scale 存放在数据区尾部，不能直接用普通浮点 tensor 替代。V 的 scale 需在两个 256 维分段内满足 token scale × dimension scale 的 rank-1 约定，并通过 `w1` / `w2` 传入对应维度 scale。Prefill 的相邻两个 query 共用一行索引，索引形状为 `[sq / 2, 1, topk]`，sq 必须为正偶数，topk 必须为 64 的正整数倍。具体参数与检查见 [Python bindings](csrc/bindings/binding.cpp)。
+Q/KV use the repository’s `uint8` packed format, which contains E4M3 data and UE8M0 scales. KV scales are stored after the data region; ordinary floating-point tensors cannot be used as direct replacements. Within each of the two 256-dimensional segments, V scales must follow the rank-1 factorization of token scale × dimension scale, with the corresponding dimension scales passed through `w1` / `w2`. For prefill, each pair of adjacent queries shares one row of indices, with an index shape of `[sq / 2, 1, topk]`. `sq` must be a positive even integer, and `topk` must be a positive multiple of 64. See the [Python bindings](csrc/bindings/binding.cpp) for detailed parameters and validation checks.
 
+## Acknowledgments
 
-## 致谢
+Thanks to [FlashMLA](https://github.com/deepseek-ai/FlashMLA).
 
-感谢 [FlashMLA](https://github.com/deepseek-ai/FlashMLA) 
+Thanks to [NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass).
 
-感谢 [NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)
-
-本项目的原创代码采用 [MIT License](LICENSE)，版权归 dingirsu 所有。来自 DeepSeek 和 NVIDIA CUTLASS 的代码分别遵循 [LICENSE.deepseek](LICENSE.deepseek) 和 [LICENSE.cutlass](LICENSE.cutlass) 中的许可条款，并保留原版权声明。
+The original code in this project is licensed under the [MIT License](LICENSE), with copyright held by dingirsu. Code derived from DeepSeek and NVIDIA CUTLASS is governed by the license terms in [LICENSE.deepseek](LICENSE.deepseek) and [LICENSE.cutlass](LICENSE.cutlass), respectively, with the original copyright notices retained.
